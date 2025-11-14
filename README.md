@@ -71,7 +71,7 @@ ra-cds-service/cds_service/
 
 ## Local Development (Quick Start)
 
-**Create the deployment folder and files:**
+**From the root of the project (ra-cds-service/), create the deployment directory structure:**
 
 ```
 mkdir -p cds_deploy/{db,nginx/certs}
@@ -275,7 +275,8 @@ cds_deploy/
 
 ## Run (Docker-Compose)
 
-```cd ra-cds-service/cds_deploy
+```
+cd cds_deploy
 docker-compose build
 docker-compose up -d
 ```
@@ -382,5 +383,5 @@ serial no.in db with a valid security token.
 
 ## License
 - SPDX-License-Identifier: AGPL-3.0 OR LicenseRef-Commercial
- - Copyright (c) 2025 Infernet Systems Pvt Ltd
+- Copyright (c) 2025 Infernet Systems Pvt Ltd
 
