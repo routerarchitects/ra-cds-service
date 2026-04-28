@@ -367,7 +367,7 @@ curl -k https://localhost:4443/v1/devices/b4:6a:d4:45:f0:19 \
 - Restart cloud discovery agent:
   `/etc/init.d/cloud_rescovery restart`
 **Expected Behaviour:**
-Respose will be stored in gateway.json if already there is entry for device
+Response will be stored in gateway.json if already there is entry for device
 serial no.in db with a valid security token.
 ----------
 
