@@ -317,7 +317,7 @@ curl -k -X POST https://localhost:5443/v1/device \
 
 Ex:
 curl -k -X POST https://localhost:5443/v1/device \
-  -H "X-Auth-Token: 4ecf0fc34dceef66b4d50cd464321c5451941e2a4ab93f0c6b0da04ed0f4e234" \
+  -H "X-Auth-Token: <use valid root security-token here>" \
   -H "Content-Type: application/json" \
   -d '{"serial":"b4:6a:d4:45:f0:19", "controller_endpoint":"openwifi3.routerarchitects.com"}'
 ```
@@ -326,7 +326,7 @@ curl -k -X POST https://localhost:5443/v1/device \
 
 ```
 curl -k -X PUT https://localhost:5443/v1/device \
-  -H "X-Auth-Token: 4ecf0fc34dceef66b4d50cd464321c5451941e2a4ab93f0c6b0da04ed0f4e234" \
+  -H "X-Auth-Token: <use valid root security-token here>" \
   -H "Content-Type: application/json" \
   -d '{"serial":"b4:6a:d4:45:f0:19", "controller_endpoint":"openwifi3.routerarchitects.com"}'
   ```
@@ -335,7 +335,7 @@ curl -k -X PUT https://localhost:5443/v1/device \
 
 ```
 curl -k -X DELETE https://localhost:5443/v1/device \
-  -H "X-Auth-Token: 4ecf0fc34dceef66b4d50cd464321c5451941e2a4ab93f0c6b0da04ed0f4e234" \
+  -H "X-Auth-Token: <use valid root security-token here>" \
   -H "Content-Type: application/json" \
   -d '{"serial":"b4:6a:d4:45:f0:19"}'
 ```
@@ -344,7 +344,7 @@ curl -k -X DELETE https://localhost:5443/v1/device \
 
 ```
 curl -k https://localhost:5443/v1/device \
-  -H "X-Auth-Token: 4ecf0fc34dceef66b4d50cd464321c5451941e2a4ab93f0c6b0da04ed0f4e234"
+  -H "X-Auth-Token: <use valid root security-token here>"
 ```
 
 ### Get controller url from device serial no.(Use device operational certs for mTLS)
