@@ -23,12 +23,11 @@ func NewDeviceHandler(svc *services.DeviceService) *DeviceHandler {
 // -------- Device-facing (mTLS) -----------
 // GET /v1/devices/{serial}
 func (h *DeviceHandler) LookupBySerial(w http.ResponseWriter, r *http.Request) {
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/devices/"), "/")
-	if len(parts) < 1 || parts[0] == "" {
+	serial := strings.ToLower(strings.TrimSpace(r.PathValue("serial")))
+	if serial == "" {
 		http.Error(w, "serial required", http.StatusBadRequest)
 		return
 	}
-	serial := strings.ToLower(parts[0])
 
 	controllerEndpoint, err := h.svc.Lookup(serial)
 	if err != nil {
@@ -56,7 +55,7 @@ type deleteReq struct {
 	Serial string `json:"serial"`
 }
 
-// POST /v1/device/add
+// POST /v1/device
 func (h *DeviceHandler) Add(w http.ResponseWriter, r *http.Request) {
 	var req addReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -83,7 +82,7 @@ func (h *DeviceHandler) Add(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// POST /v1/device/update
+// PUT /v1/device
 func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	var req updateReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -109,7 +108,7 @@ func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// POST /v1/device/delete
+// DELETE /v1/device
 func (h *DeviceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	var req deleteReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -135,7 +134,7 @@ func (h *DeviceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /v1/device/list
+// GET /v1/device
 func (h *DeviceHandler) List(w http.ResponseWriter, r *http.Request) {
 	ownerToken, err := GetOwnerTokenFromCtx(r)
 	if err != nil {
@@ -150,4 +149,3 @@ func (h *DeviceHandler) List(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(devices)
 }
-

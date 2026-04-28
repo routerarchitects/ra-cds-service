@@ -21,18 +21,17 @@ func NewRouterWithConfig(cfg *config.Config, svc *services.DeviceService) *http.
 	mux := http.NewServeMux()
 
 	// Health (no auth)
-	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("GET /health", healthHandler)
 
-	// Device (mTLS) route — unchanged
-	mux.Handle("/v1/devices/", RequireClientCert(http.HandlerFunc(h.LookupBySerial)))
+	// Device (mTLS) route
+	mux.Handle("GET /v1/devices/{serial}", RequireClientCert(http.HandlerFunc(h.LookupBySerial)))
 
 	// Admin routes (validated token, userRole==root)
 	admin := func(hh http.HandlerFunc) http.Handler { return RequireValidatedAdmin(cfg, hh) }
-	mux.Handle("/v1/device/add",    admin(http.HandlerFunc(h.Add)))
-	mux.Handle("/v1/device/update", admin(http.HandlerFunc(h.Update)))
-	mux.Handle("/v1/device/delete", admin(http.HandlerFunc(h.Delete)))
-	mux.Handle("/v1/device/list",   admin(http.HandlerFunc(h.List)))
+	mux.Handle("POST /v1/device", admin(http.HandlerFunc(h.Add)))
+	mux.Handle("PUT /v1/device", admin(http.HandlerFunc(h.Update)))
+	mux.Handle("DELETE /v1/device", admin(http.HandlerFunc(h.Delete)))
+	mux.Handle("GET /v1/device", admin(http.HandlerFunc(h.List)))
 
 	return mux
 }
-

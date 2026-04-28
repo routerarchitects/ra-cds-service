@@ -29,7 +29,7 @@ This service runs Go APIs (PostgreSQL-backed) fronted by Nginx (TLS).
 
 `ra-cds-service` exposes HTTPS APIs to:
 
--   Add / update / delete /list devices.
+-   Manage devices (add, update, delete, list) using the unified `/v1/device` admin API.
 -   Serves the device → controller endpoint mappings.
 
 
@@ -199,7 +199,8 @@ EXPOSE 4443 5443
 
 ### `cds_deploy/nginx/cds.conf`
 
-```# Device-facing API (requires mTLS)
+```nginx
+# Device-facing API (requires mTLS)
 server {
     listen 4443 ssl;
     server_name localhost;
@@ -224,7 +225,7 @@ server {
     ssl_certificate_key    /etc/ssl/private/server-key.pem;
     ssl_verify_client      off;
 
-    location /v1/device/ {
+    location = /v1/device {
         proxy_pass http://cds-api:8080;
     }
 }
@@ -293,32 +294,39 @@ docker-compose logs -f nginx
 
 ## Verify
 
-### Important Note(Security Token Requirement):
+### Important Notes:
+#### Security Token Requirement:
 - The CDS service enforces strict access control.
 - All **add / update / delete / list** operations require a valid security-token belonging to a user with the **root** role.
 - Always make sure you are using a valid root security-token before running any admin operations.
+#### API Method Mapping (Admin APIs)
+The admin device API uses a single resource path with method-based routing:
 
+GET    /v1/device        -> list devices
+POST   /v1/device        -> create or upsert device
+PUT    /v1/device        -> update existing device
+DELETE /v1/device        -> delete device
 
 ### Add device
 
 ```
-curl -k -X POST https://localhost:5443/v1/device/add \
+curl -k -X POST https://localhost:5443/v1/device \
   -H "X-Auth-Token: <use valid root security-token here>" \
   -H "Content-Type: application/json" \
   -d '{"serial":"<device-serial-no.>", "controller_endpoint":"<controller-url>"}'
 
 Ex:
-curl -k -X POST https://localhost:5443/v1/device/add \
-  -H "X-Auth-Token: 7889ca8f760184f2dd0841a32c70351eec9331d16af88932fbe824352a16717f" \
+curl -k -X POST https://localhost:5443/v1/device \
+  -H "X-Auth-Token: <use valid root security-token here>" \
   -H "Content-Type: application/json" \
-  -d '{"serial":"b4:6a:d4:45:f0:19", "controller_endpoint":"openwifi1.routerarchitects.com"}'
+  -d '{"serial":"b4:6a:d4:45:f0:19", "controller_endpoint":"openwifi3.routerarchitects.com"}'
 ```
 
 ### Update device
 
 ```
-curl -k -X PUT https://localhost:5443/v1/device/update \
-  -H "X-Auth-Token: 7889ca8f760184f2dd0841a32c70351eec9331d16af88932fbe824352a16717f" \
+curl -k -X PUT https://localhost:5443/v1/device \
+  -H "X-Auth-Token: <use valid root security-token here>" \
   -H "Content-Type: application/json" \
   -d '{"serial":"b4:6a:d4:45:f0:19", "controller_endpoint":"openwifi3.routerarchitects.com"}'
   ```
@@ -326,8 +334,8 @@ curl -k -X PUT https://localhost:5443/v1/device/update \
 ### Delete device
 
 ```
-curl -k -X DELETE https://localhost:5443/v1/device/delete \
-  -H "X-Auth-Token: 7889ca8f760184f2dd0841a32c70351eec9331d16af88932fbe824352a16717f" \
+curl -k -X DELETE https://localhost:5443/v1/device \
+  -H "X-Auth-Token: <use valid root security-token here>" \
   -H "Content-Type: application/json" \
   -d '{"serial":"b4:6a:d4:45:f0:19"}'
 ```
@@ -335,8 +343,8 @@ curl -k -X DELETE https://localhost:5443/v1/device/delete \
 ### List all devices (Added with security token)
 
 ```
-curl -k https://localhost:5443/v1/device/list \
-  -H "X-Auth-Token: 7889ca8f760184f2dd0841a32c70351eec9331d16af88932fbe824352a16717f"
+curl -k https://localhost:5443/v1/device \
+  -H "X-Auth-Token: <use valid root security-token here>"
 ```
 
 ### Get controller url from device serial no.(Use device operational certs for mTLS)
@@ -359,7 +367,7 @@ curl -k https://localhost:4443/v1/devices/b4:6a:d4:45:f0:19 \
 - Restart cloud discovery agent:
   `/etc/init.d/cloud_rescovery restart`
 **Expected Behaviour:**
-Respose will be store in gateway.json if already there is entry for device
+Response will be stored in gateway.json if already there is entry for device
 serial no.in db with a valid security token.
 ----------
 
