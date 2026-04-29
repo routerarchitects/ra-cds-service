@@ -10,9 +10,12 @@ import (
 	"cds/internal/services"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 	"testing"
 
@@ -32,6 +35,9 @@ func mustOpenTestDB(t *testing.T) *sql.DB {
 	if dsn == "" {
 		t.Skip("POSTGRES_DSN not set; skipping integration tests")
 	}
+	if err := requireSafeTestDB(dsn); err != nil {
+		t.Fatalf("unsafe POSTGRES_DSN for integration test: %v", err)
+	}
 
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
@@ -42,6 +48,18 @@ func mustOpenTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("ping postgres: %v", err)
 	}
 	return db
+}
+
+func requireSafeTestDB(dsn string) error {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return fmt.Errorf("invalid DSN: %w", err)
+	}
+	dbName := strings.TrimPrefix(path.Clean(u.Path), "/")
+	if dbName != "cds_test" {
+		return fmt.Errorf("database %q is not allowed; expected %q", dbName, "cds_test")
+	}
+	return nil
 }
 
 func resetDevicesTable(t *testing.T, db *sql.DB) {
