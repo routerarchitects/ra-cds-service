@@ -116,7 +116,7 @@ services:
       dockerfile: Dockerfile
     container_name: cds-api
     ports:
-      - "8080:8080"
+      - "8081:8080"
     env_file:
       - .env
     depends_on:
