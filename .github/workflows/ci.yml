@@ -24,6 +24,18 @@ jobs:
           --health-retries 5
     env:
       POSTGRES_DSN: postgres://postgres:password@localhost:5432/cds_test?sslmode=disable
+      AUTH_MODE: keycloak-dpop
+      KEYCLOAK_ISSUER_URL: https://keycloak.example.com/realms/cds
+      KEYCLOAK_JWKS_URL: https://keycloak.example.com/realms/cds/protocol/openid-connect/certs
+      KEYCLOAK_AUDIENCE: cds-service
+      KEYCLOAK_REQUIRED_ROLE: cds-admin
+      KEYCLOAK_ADMIN_UI_CLIENT_ID: cds-admin-ui
+      DPOP_REQUIRED: "true"
+      DPOP_JTI_CACHE_TTL_SECONDS: "300"
+      DPOP_PROOF_MAX_AGE_SECONDS: "300"
+      DPOP_CLOCK_SKEW_SECONDS: "30"
+      JWKS_CACHE_TTL_SECONDS: "300"
+      TRUSTED_PROXY_CIDRS: 10.0.0.0/8,127.0.0.1/32
 
     defaults:
       run:

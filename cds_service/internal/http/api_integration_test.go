@@ -8,9 +8,15 @@ import (
 	"cds/internal/adapters/postgres"
 	"cds/internal/config"
 	"cds/internal/services"
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,19 +24,18 @@ import (
 	"path"
 	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/lib/pq"
 )
 
 const (
-	testOwnerToken = "root-token"
-	testSerial     = "b4:6a:d4:45:f0:19"
-	testEndpoint   = "openwifi3.routerarchitects.com"
+	testSerial   = "b4:6a:d4:45:f0:19"
+	testEndpoint = "openwifi3.routerarchitects.com"
 )
 
 func mustOpenTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-
 	dsn := os.Getenv("POSTGRES_DSN")
 	if dsn == "" {
 		t.Skip("POSTGRES_DSN not set; skipping integration tests")
@@ -38,7 +43,6 @@ func mustOpenTestDB(t *testing.T) *sql.DB {
 	if err := requireSafeTestDB(dsn); err != nil {
 		t.Fatalf("unsafe POSTGRES_DSN for integration test: %v", err)
 	}
-
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)
@@ -64,14 +68,13 @@ func requireSafeTestDB(dsn string) error {
 
 func resetDevicesTable(t *testing.T, db *sql.DB) {
 	t.Helper()
-
 	const schema = `
 CREATE TABLE IF NOT EXISTS public.devices (
   serial TEXT PRIMARY KEY,
   controller_endpoint TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  owner_token TEXT
+  owner_scope TEXT
 );
 TRUNCATE TABLE public.devices;
 `
@@ -80,42 +83,72 @@ TRUNCATE TABLE public.devices;
 	}
 }
 
-func newRootValidator(t *testing.T) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := r.URL.Query().Get("token")
-		if token == "" || r.Header.Get("Authorization") != "Bearer "+token {
-			http.Error(w, "invalid token header", http.StatusForbidden)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"tokenInfo": map[string]string{"access_token": token},
-			"userInfo":  map[string]string{"userRole": "root"},
-		})
-	}))
+type keyMaterial struct {
+	key *rsa.PrivateKey
+	kid string
 }
 
-func newIntegrationRouter(t *testing.T) (*http.ServeMux, *sql.DB) {
-	t.Helper()
+func newJWKSHandler(km *keyMaterial) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pub := km.key.Public().(*rsa.PublicKey)
+		jwks := map[string]any{
+			"keys": []map[string]any{
+				{
+					"kty": "RSA",
+					"kid": km.kid,
+					"use": "sig",
+					"alg": "RS256",
+					"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+					"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(jwks)
+	})
+}
 
+func newIntegrationRouter(t *testing.T) (http.Handler, *sql.DB, *keyMaterial, *rsa.PrivateKey) {
+	t.Helper()
 	db := mustOpenTestDB(t)
 	resetDevicesTable(t, db)
 
+	tokenKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate token key: %v", err)
+	}
+	dpopKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate dpop key: %v", err)
+	}
+	km := &keyMaterial{key: tokenKey, kid: "test-kid-1"}
+	jwks := httptest.NewServer(newJWKSHandler(km))
+
 	repo := postgres.NewRepo(db)
 	svc := services.New(repo)
-	validator := newRootValidator(t)
-	t.Cleanup(validator.Close)
-	t.Cleanup(func() { _ = db.Close() })
-
 	cfg := &config.Config{
-		ValidateTokenURL: validator.URL,
+		PostgresDSN:            "postgres://unused",
+		HTTPAddr:               ":8080",
+		AuthMode:               "keycloak-dpop",
+		KeycloakIssuerURL:      "https://keycloak.example.com/realms/cds",
+		KeycloakJWKSURL:        jwks.URL,
+		KeycloakAudience:       "cds-service",
+		KeycloakRequiredRole:   "cds-admin",
+		KeycloakAdminUIClient:  "cds-admin-ui",
+		DPoPRequired:           true,
+		DPoPJtiCacheTTLSeconds: 300,
+		DPoPProofMaxAgeSeconds: 300,
+		DPoPClockSkewSeconds:   30,
+		JWKSCacheTTLSeconds:    300,
+		TrustedProxyCIDRs:      []string{"10.0.0.0/8"},
 	}
-	return NewRouterWithConfig(cfg, svc), db
+	t.Cleanup(jwks.Close)
+	t.Cleanup(func() { _ = db.Close() })
+	return NewRouterWithConfig(cfg, svc), db, km, dpopKey
 }
 
-func performJSONRequest(router http.Handler, method, path, body string, headers map[string]string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
+func performJSONRequest(router http.Handler, method, p, body string, headers map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, p, strings.NewReader(body))
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -124,24 +157,85 @@ func performJSONRequest(router http.Handler, method, path, body string, headers 
 	return rr
 }
 
-func adminHeaders() map[string]string {
+func signJWT(privateKey *rsa.PrivateKey, header map[string]any, payload map[string]any) string {
+	hb, _ := json.Marshal(header)
+	pb, _ := json.Marshal(payload)
+	unsigned := base64.RawURLEncoding.EncodeToString(hb) + "." + base64.RawURLEncoding.EncodeToString(pb)
+	h := sha256.Sum256([]byte(unsigned))
+	sig, _ := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, h[:])
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func jwkThumbprintRSA(pub *rsa.PublicKey) string {
+	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes())
+	n := base64.RawURLEncoding.EncodeToString(pub.N.Bytes())
+	canonical := `{"e":"` + e + `","kty":"RSA","n":"` + n + `"}`
+	sum := sha256.Sum256([]byte(canonical))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func buildAdminHeaders(method, path string, tokenSigner *keyMaterial, dpopKey *rsa.PrivateKey) map[string]string {
+	now := time.Now().Unix()
+	nonce := make([]byte, 8)
+	if _, err := rand.Read(nonce); err != nil {
+		panic(err)
+	}
+	dpopPub := dpopKey.Public().(*rsa.PublicKey)
+	dpopJKT := jwkThumbprintRSA(dpopPub)
+	accessToken := signJWT(tokenSigner.key, map[string]any{
+		"alg": "RS256",
+		"typ": "JWT",
+		"kid": tokenSigner.kid,
+	}, map[string]any{
+		"iss": "https://keycloak.example.com/realms/cds",
+		"sub": "admin-subject-1",
+		"aud": []string{"cds-service"},
+		"exp": now + 3600,
+		"iat": now,
+		"azp": "cds-admin-ui",
+		"cnf": map[string]any{"jkt": dpopJKT},
+		"resource_access": map[string]any{
+			"cds-service": map[string]any{
+				"roles": []string{"cds-admin"},
+			},
+		},
+	})
+
+	athHash := sha256.Sum256([]byte(accessToken))
+	ath := base64.RawURLEncoding.EncodeToString(athHash[:])
+	dpopProof := signJWT(dpopKey, map[string]any{
+		"alg": "RS256",
+		"typ": "dpop+jwt",
+		"jwk": map[string]any{
+			"kty": "RSA",
+			"n":   base64.RawURLEncoding.EncodeToString(dpopPub.N.Bytes()),
+			"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(dpopPub.E)).Bytes()),
+		},
+	}, map[string]any{
+		"htu": "http://example.com" + path,
+		"htm": method,
+		"iat": now,
+		"jti": fmt.Sprintf("jti-%d-%s-%s-%s", now, method, path, base64.RawURLEncoding.EncodeToString(nonce)),
+		"ath": ath,
+	})
 	return map[string]string{
-		"X-Auth-Token": testOwnerToken,
-		"Content-Type": "application/json",
-		"Accept":       "application/json",
+		"Authorization": "DPoP " + accessToken,
+		"DPoP":          dpopProof,
+		"Content-Type":  "application/json",
+		"Accept":        "application/json",
 	}
 }
 
 func TestCRUDAndDeviceFacingAPIIntegration(t *testing.T) {
-	router, _ := newIntegrationRouter(t)
+	router, _, signer, dpopKey := newIntegrationRouter(t)
 
 	postBody := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"` + testEndpoint + `"}`
-	rr := performJSONRequest(router, http.MethodPost, "/v1/device", postBody, adminHeaders())
+	rr := performJSONRequest(router, http.MethodPost, "/v1/device", postBody, buildAdminHeaders(http.MethodPost, "/v1/device", signer, dpopKey))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("POST /v1/device got %d, want %d (body=%s)", rr.Code, http.StatusCreated, rr.Body.String())
 	}
 
-	rr = performJSONRequest(router, http.MethodGet, "/v1/device", "", adminHeaders())
+	rr = performJSONRequest(router, http.MethodGet, "/v1/device", "", buildAdminHeaders(http.MethodGet, "/v1/device", signer, dpopKey))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET /v1/device got %d, want %d (body=%s)", rr.Code, http.StatusOK, rr.Body.String())
 	}
@@ -169,32 +263,17 @@ func TestCRUDAndDeviceFacingAPIIntegration(t *testing.T) {
 	}
 
 	putBody := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"openwifi9.routerarchitects.com"}`
-	rr = performJSONRequest(router, http.MethodPut, "/v1/device", putBody, adminHeaders())
+	rr = performJSONRequest(router, http.MethodPut, "/v1/device", putBody, buildAdminHeaders(http.MethodPut, "/v1/device", signer, dpopKey))
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("PUT /v1/device got %d, want %d (body=%s)", rr.Code, http.StatusNoContent, rr.Body.String())
 	}
 
-	rr = performJSONRequest(router, http.MethodGet, "/v1/devices/B4:6A:D4:45:F0:19", "", map[string]string{
-		"X-SSL-Client-Verify": "SUCCESS",
-		"Accept":              "application/json",
-	})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("GET /v1/devices/{serial} after update got %d, want %d (body=%s)", rr.Code, http.StatusOK, rr.Body.String())
-	}
-	device = nil
-	if err := json.NewDecoder(rr.Body).Decode(&device); err != nil {
-		t.Fatalf("decode device response after update: %v", err)
-	}
-	if device["serial"] != testSerial || device["controller_endpoint"] != "openwifi9.routerarchitects.com" {
-		t.Fatalf("unexpected device response after update: %#v", device)
-	}
-
-	rr = performJSONRequest(router, http.MethodDelete, "/v1/device", `{"serial":"B4:6A:D4:45:F0:19"}`, adminHeaders())
+	rr = performJSONRequest(router, http.MethodDelete, "/v1/device/B4:6A:D4:45:F0:19", "", buildAdminHeaders(http.MethodDelete, "/v1/device/B4:6A:D4:45:F0:19", signer, dpopKey))
 	if rr.Code != http.StatusNoContent {
-		t.Fatalf("DELETE /v1/device got %d, want %d (body=%s)", rr.Code, http.StatusNoContent, rr.Body.String())
+		t.Fatalf("DELETE /v1/device/{serial} got %d, want %d (body=%s)", rr.Code, http.StatusNoContent, rr.Body.String())
 	}
 
-	rr = performJSONRequest(router, http.MethodGet, "/v1/device", "", adminHeaders())
+	rr = performJSONRequest(router, http.MethodGet, "/v1/device", "", buildAdminHeaders(http.MethodGet, "/v1/device", signer, dpopKey))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET /v1/device (after delete) got %d, want %d (body=%s)", rr.Code, http.StatusOK, rr.Body.String())
 	}

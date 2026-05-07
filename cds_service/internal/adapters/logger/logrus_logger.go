@@ -55,4 +55,3 @@ func (l *Logrus) Errorf(f string, a ...any) { l.l.Errorf(f, a...) }
 func (l *Logrus) WithField(k string, v any) *Logrus {
 	return &Logrus{l: l.l.WithField(k, v)}
 }
-

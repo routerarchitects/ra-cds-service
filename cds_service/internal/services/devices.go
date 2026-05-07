@@ -21,7 +21,7 @@ func (s *DeviceService) Lookup(serial string) (string, error) {
 	return s.repo.GetEndpointBySerial(context.Background(), serial)
 }
 
-// Admin-facing (scoped by owner token)
+// Admin-facing (scoped by owner scope)
 func (s *DeviceService) AddOwned(serial, controllerEndpoint, owner string) error {
 	return s.repo.AddDevice(context.Background(), serial, controllerEndpoint, owner)
 }
@@ -34,4 +34,3 @@ func (s *DeviceService) DeleteOwned(serial, owner string) error {
 func (s *DeviceService) ListByOwner(owner string) ([]map[string]string, error) {
 	return s.repo.ListDevicesByOwner(context.Background(), owner)
 }
-

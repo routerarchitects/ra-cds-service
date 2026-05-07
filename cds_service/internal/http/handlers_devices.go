@@ -41,7 +41,7 @@ func (h *DeviceHandler) LookupBySerial(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// -------------- Admin (validated token, userRole=root) ----------------
+// -------------- Admin (Keycloak DPoP) ----------------
 
 type addReq struct {
 	Serial             string `json:"serial"`
@@ -50,9 +50,6 @@ type addReq struct {
 type updateReq struct {
 	Serial             string `json:"serial"`
 	ControllerEndpoint string `json:"controller_endpoint"`
-}
-type deleteReq struct {
-	Serial string `json:"serial"`
 }
 
 // POST /v1/device
@@ -64,9 +61,9 @@ func (h *DeviceHandler) Add(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Serial = strings.ToLower(strings.TrimSpace(req.Serial))
 
-	ownerToken, err := GetOwnerTokenFromCtx(r)
+	ownerScope, err := GetOwnerScopeFromCtx(r)
 	if err != nil {
-		http.Error(w, "security token validation failed", http.StatusForbidden)
+		http.Error(w, "invalid access token", http.StatusUnauthorized)
 		return
 	}
 	if req.Serial == "" || strings.TrimSpace(req.ControllerEndpoint) == "" {
@@ -74,7 +71,7 @@ func (h *DeviceHandler) Add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.AddOwned(req.Serial, req.ControllerEndpoint, ownerToken); err != nil {
+	if err := h.svc.AddOwned(req.Serial, req.ControllerEndpoint, ownerScope); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
@@ -91,9 +88,9 @@ func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Serial = strings.ToLower(strings.TrimSpace(req.Serial))
 
-	ownerToken, err := GetOwnerTokenFromCtx(r)
+	ownerScope, err := GetOwnerScopeFromCtx(r)
 	if err != nil {
-		http.Error(w, "security token validation failed", http.StatusForbidden)
+		http.Error(w, "invalid access token", http.StatusUnauthorized)
 		return
 	}
 	if req.Serial == "" || strings.TrimSpace(req.ControllerEndpoint) == "" {
@@ -101,33 +98,28 @@ func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.svc.UpdateOwned(req.Serial, req.ControllerEndpoint, ownerToken); err != nil {
+	if err := h.svc.UpdateOwned(req.Serial, req.ControllerEndpoint, ownerScope); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// DELETE /v1/device
+// DELETE /v1/device/{serial}
 func (h *DeviceHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	var req deleteReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	req.Serial = strings.ToLower(strings.TrimSpace(req.Serial))
+	serial := strings.ToLower(strings.TrimSpace(r.PathValue("serial")))
 
-	ownerToken, err := GetOwnerTokenFromCtx(r)
+	ownerScope, err := GetOwnerScopeFromCtx(r)
 	if err != nil {
-		http.Error(w, "security token validation failed", http.StatusForbidden)
+		http.Error(w, "invalid access token", http.StatusUnauthorized)
 		return
 	}
-	if req.Serial == "" {
-		http.Error(w, "serial is required", http.StatusBadRequest)
+	if serial == "" {
+		http.Error(w, "serial path parameter is empty or whitespace after trimming", http.StatusBadRequest)
 		return
 	}
 
-	if err := h.svc.DeleteOwned(req.Serial, ownerToken); err != nil {
+	if err := h.svc.DeleteOwned(serial, ownerScope); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
@@ -136,12 +128,12 @@ func (h *DeviceHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/device
 func (h *DeviceHandler) List(w http.ResponseWriter, r *http.Request) {
-	ownerToken, err := GetOwnerTokenFromCtx(r)
+	ownerScope, err := GetOwnerScopeFromCtx(r)
 	if err != nil {
-		http.Error(w, "security token validation failed", http.StatusForbidden)
+		http.Error(w, "invalid access token", http.StatusUnauthorized)
 		return
 	}
-	devices, err := h.svc.ListByOwner(ownerToken)
+	devices, err := h.svc.ListByOwner(ownerScope)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
