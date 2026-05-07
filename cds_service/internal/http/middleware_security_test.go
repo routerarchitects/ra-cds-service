@@ -22,6 +22,33 @@ import (
 	"cds/internal/config"
 )
 
+func TestJWKThumbprintCanonicalizationNoBackslashes(t *testing.T) {
+	jwk := map[string]any{
+		"kty": "RSA",
+		"e":   "AQAB",
+		"n":   "abc123",
+	}
+	got, err := jwkThumbprint(jwk)
+	if err != nil {
+		t.Fatalf("jwkThumbprint failed: %v", err)
+	}
+	// Expected hash is based on RFC 7638-style canonical JSON (no backslashes).
+	canonical := `{"e":"AQAB","kty":"RSA","n":"abc123"}`
+	sum := sha256.Sum256([]byte(canonical))
+	want := base64.RawURLEncoding.EncodeToString(sum[:])
+	if got != want {
+		t.Fatalf("thumbprint mismatch: got=%q want=%q", got, want)
+	}
+
+	// Guardrail: do not hash a backslash-escaped pseudo-JSON string.
+	badCanonical := `{\"e\":\"AQAB\",\"kty\":\"RSA\",\"n\":\"abc123\"}`
+	badSum := sha256.Sum256([]byte(badCanonical))
+	bad := base64.RawURLEncoding.EncodeToString(badSum[:])
+	if got == bad {
+		t.Fatalf("thumbprint unexpectedly matches backslash-escaped canonical form")
+	}
+}
+
 type testKeyMaterial struct {
 	key *rsa.PrivateKey
 	kid string
