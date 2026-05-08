@@ -74,8 +74,10 @@ func RequireKeycloakDPoPAdmin(cfg *config.Config, next http.Handler) http.Handle
 		kid := extractJWTKid(accessToken)
 
 		tokenClaims, kidKnown, err := actx.validateAccessToken(accessToken)
-		if err != nil && errors.Is(err, errUnknownKID) && !kidKnown {
-			logAdminAuth(log, "unknown_kid_detected", r, kid, nil)
+		if err != nil && ((errors.Is(err, errUnknownKID) && !kidKnown) || errors.Is(err, errJWKSCacheStale)) {
+			if errors.Is(err, errUnknownKID) && !kidKnown {
+				logAdminAuth(log, "unknown_kid_detected", r, kid, nil)
+			}
 			logAdminAuth(log, "jwks_refresh_started", r, kid, nil)
 			if refreshErr := actx.jwks.refresh(r.Context(), actx.client, cfg.KeycloakJWKSURL); refreshErr != nil {
 				logAdminAuth(log, "jwks_fetch_failed", r, kid, nil)
@@ -175,6 +177,7 @@ func getAuthContext(cfg *config.Config) *authContext {
 
 var (
 	errUnknownKID          = errors.New("unknown access token kid after JWKS refresh")
+	errJWKSCacheStale      = errors.New("jwks cache stale")
 	errInvalidConfig       = errors.New("server Keycloak configuration invalid")
 	errInvalidAdminClient  = errors.New("invalid admin client")
 	errMissingRequiredRole = errors.New("missing required role")
@@ -224,7 +227,10 @@ func (a *authContext) validateAccessToken(token string) (*tokenClaims, bool, err
 		return nil, false, errJWTInvalid
 	}
 
-	key, found := a.jwks.get(kid)
+	key, found, stale := a.jwks.get(kid)
+	if stale {
+		return nil, found, errJWKSCacheStale
+	}
 	if !found {
 		return nil, false, errUnknownKID
 	}
@@ -423,15 +429,15 @@ func newJWKSCache(ttl time.Duration) *jwksCache {
 	return &jwksCache{keys: map[string]any{}, ttl: ttl}
 }
 
-func (j *jwksCache) get(kid string) (any, bool) {
+func (j *jwksCache) get(kid string) (any, bool, bool) {
 	j.mu.RLock()
 	key, ok := j.keys[kid]
 	stale := j.lastSyncAt.IsZero() || time.Since(j.lastSyncAt) > j.ttl
 	j.mu.RUnlock()
 	if ok || !stale {
-		return key, ok
+		return key, ok, stale
 	}
-	return nil, false
+	return nil, false, true
 }
 
 func (j *jwksCache) refresh(ctx context.Context, client *http.Client, jwksURL string) error {

@@ -415,6 +415,71 @@ func TestUnknownKIDRefreshBehavior(t *testing.T) {
 			t.Fatalf("expected one refresh hit, got %d", jwks2.hitCount())
 		}
 	})
+
+	t.Run("stale cache refreshes even when kid is known", func(t *testing.T) {
+		jwks3 := &jwksState{}
+		jwks3.setKeys([]map[string]any{jwkFromRSA(tokenKey)})
+		srv3 := httptest.NewServer(http.HandlerFunc(jwks3.handler))
+		defer srv3.Close()
+
+		cfg := newMiddlewareTestConfig(srv3.URL, false)
+		cfg.JWKSCacheTTLSeconds = 1
+		token := buildAccessToken(t, tokenKey, dpopKey.key.Public().(*rsa.PublicKey), tokenOpts{includeCNF: true})
+
+		rr1 := executeAdminRequest(t, cfg, http.MethodGet, "http://example.com/v1/device", "DPoP "+token, "", "", nil)
+		if rr1.Code != http.StatusNoContent {
+			t.Fatalf("first got %d body=%q", rr1.Code, rr1.Body.String())
+		}
+		if jwks3.hitCount() != 1 {
+			t.Fatalf("expected first refresh hit count to be 1, got %d", jwks3.hitCount())
+		}
+
+		actx := getAuthContext(cfg)
+		actx.jwks.mu.Lock()
+		actx.jwks.lastSyncAt = time.Now().Add(-2 * actx.jwks.ttl)
+		actx.jwks.mu.Unlock()
+
+		rr2 := executeAdminRequest(t, cfg, http.MethodGet, "http://example.com/v1/device", "DPoP "+token, "", "", nil)
+		if rr2.Code != http.StatusNoContent {
+			t.Fatalf("second got %d body=%q", rr2.Code, rr2.Body.String())
+		}
+		if jwks3.hitCount() != 2 {
+			t.Fatalf("expected stale-cache refresh hit count to be 2, got %d", jwks3.hitCount())
+		}
+	})
+
+	t.Run("stale known kid refresh fails when JWKS refresh fails", func(t *testing.T) {
+		jwks4 := &jwksState{}
+		jwks4.setKeys([]map[string]any{jwkFromRSA(tokenKey)})
+		srv4 := httptest.NewServer(http.HandlerFunc(jwks4.handler))
+		defer srv4.Close()
+
+		cfg := newMiddlewareTestConfig(srv4.URL, false)
+		cfg.JWKSCacheTTLSeconds = 300
+		token := buildAccessToken(t, tokenKey, dpopKey.key.Public().(*rsa.PublicKey), tokenOpts{includeCNF: true})
+
+		rr1 := executeAdminRequest(t, cfg, http.MethodGet, "http://example.com/v1/device", "DPoP "+token, "", "", nil)
+		if rr1.Code != http.StatusNoContent {
+			t.Fatalf("first got %d body=%q", rr1.Code, rr1.Body.String())
+		}
+		if jwks4.hitCount() != 1 {
+			t.Fatalf("expected first refresh hit count to be 1, got %d", jwks4.hitCount())
+		}
+
+		actx := getAuthContext(cfg)
+		actx.jwks.mu.Lock()
+		actx.jwks.lastSyncAt = time.Now().Add(-2 * actx.jwks.ttl)
+		actx.jwks.mu.Unlock()
+		jwks4.setKeys([]map[string]any{})
+
+		rr2 := executeAdminRequest(t, cfg, http.MethodGet, "http://example.com/v1/device", "DPoP "+token, "", "", nil)
+		if rr2.Code != http.StatusInternalServerError || !strings.Contains(rr2.Body.String(), "failed to fetch Keycloak JWKS") {
+			t.Fatalf("second got %d body=%q", rr2.Code, rr2.Body.String())
+		}
+		if jwks4.hitCount() != 2 {
+			t.Fatalf("expected second refresh attempt, hit count=2 got %d", jwks4.hitCount())
+		}
+	})
 }
 
 func TestDPoPValidationScenarios(t *testing.T) {

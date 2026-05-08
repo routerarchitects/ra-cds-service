@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -91,6 +92,11 @@ func Load() (*Config, error) {
 	cfg.TrustedProxyCIDRs = parseListEnv("TRUSTED_PROXY_CIDRS")
 	if len(cfg.TrustedProxyCIDRs) == 0 {
 		return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS is required")
+	}
+	for _, cidr := range cfg.TrustedProxyCIDRs {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return nil, fmt.Errorf("TRUSTED_PROXY_CIDRS contains invalid CIDR %q", cidr)
+		}
 	}
 	return cfg, nil
 }
