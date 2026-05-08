@@ -265,6 +265,11 @@ TRUSTED_PROXY_CIDRS=172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
 ---------
 
 **Note:**
+`cds-api` should remain reachable only on the internal network path behind Nginx. CDS trusts
+`X-SSL-Client-Verify` only when the request source IP is within `TRUSTED_PROXY_CIDRS`.
+
+Device-facing lookup is currently global for any successfully mTLS-verified device client. CDS does not bind the verified client certificate identity to the requested `/v1/devices/{serial}` value. Per-device certificate-to-serial authorization is planned as a follow-up hardening step.
+
 Set the Keycloak and DPoP values to your deployment-specific values.
 Admin API requests must include both:
 - `Authorization: DPoP <keycloak_access_token>`

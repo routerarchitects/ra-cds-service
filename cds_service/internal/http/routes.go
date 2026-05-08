@@ -24,7 +24,7 @@ func NewRouterWithConfig(cfg *config.Config, svc *services.DeviceService) http.H
 	mux.HandleFunc("GET /health", healthHandler)
 
 	// Device (mTLS) route
-	mux.Handle("GET /v1/devices/{serial}", RequireClientCert(http.HandlerFunc(h.LookupBySerial)))
+	mux.Handle("GET /v1/devices/{serial}", RequireClientCert(cfg, http.HandlerFunc(h.LookupBySerial)))
 
 	// Admin routes (Keycloak DPoP)
 	admin := func(hh http.HandlerFunc) http.Handler { return RequireKeycloakDPoPAdmin(cfg, hh) }

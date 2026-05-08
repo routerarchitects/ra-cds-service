@@ -31,10 +31,15 @@ type ctxKey string
 
 const ctxKeyOwnerScope ctxKey = "ownerScope"
 
-// Device mTLS guard (existing behavior)
-func RequireClientCert(next http.Handler) http.Handler {
+// Device mTLS guard (trust mTLS verification header only from trusted proxies)
+func RequireClientCert(cfg *config.Config, next http.Handler) http.Handler {
+	actx := getAuthContext(cfg)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-SSL-Client-Verify") != "SUCCESS" {
+		if !actx.isTrustedRemote(r.RemoteAddr) {
+			http.Error(w, "client certificate required", http.StatusUnauthorized)
+			return
+		}
+		if strings.TrimSpace(r.Header.Get("X-SSL-Client-Verify")) != "SUCCESS" {
 			http.Error(w, "client certificate required", http.StatusUnauthorized)
 			return
 		}

@@ -14,6 +14,8 @@ type Repo struct{ db *sql.DB }
 
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
+var ErrDeviceOwnerConflict = errors.New("device already exists for another owner")
+
 // Device-facing lookup (no owner check)
 func (r *Repo) GetEndpointBySerial(ctx context.Context, serial string) (string, error) {
 	var controllerEndpoint string
@@ -31,14 +33,20 @@ func (r *Repo) GetEndpointBySerial(ctx context.Context, serial string) (string, 
 
 // Admin-facing (scoped to owner scope)
 func (r *Repo) AddDevice(ctx context.Context, serial, controllerEndpoint, owner string) error {
-	_, err := r.db.ExecContext(ctx,
+	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO public.devices (serial, controller_endpoint, owner_scope)
          VALUES (lower($1), $2, $3)
          ON CONFLICT (serial) DO UPDATE
-           SET controller_endpoint = EXCLUDED.controller_endpoint,
-               owner_scope = EXCLUDED.owner_scope`,
+           SET controller_endpoint = EXCLUDED.controller_endpoint
+         WHERE public.devices.owner_scope = EXCLUDED.owner_scope`,
 		serial, controllerEndpoint, owner)
-	return err
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return ErrDeviceOwnerConflict
+	}
+	return nil
 }
 
 func (r *Repo) UpdateDevice(ctx context.Context, serial, controllerEndpoint, owner string) error {

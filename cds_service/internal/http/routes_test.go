@@ -34,6 +34,7 @@ func newTestRouter() http.Handler {
 // Helper to check status code
 func assertStatus(t *testing.T, router http.Handler, method, path string, want int) {
 	req := httptest.NewRequest(method, path, nil)
+	req.RemoteAddr = "127.0.0.1:12345"
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -73,6 +74,58 @@ func TestDeviceLookupMethodEnforcement(t *testing.T) {
 
 	// Unsupported method → 405
 	assertStatus(t, r, "POST", "/v1/devices/abc", http.StatusMethodNotAllowed)
+}
+
+func TestDeviceLookupTrustedProxyRequirement(t *testing.T) {
+	cfg := &config.Config{
+		AuthMode:               "keycloak-dpop",
+		KeycloakIssuerURL:      "https://issuer.example/realms/cds",
+		KeycloakJWKSURL:        "http://127.0.0.1/keys",
+		KeycloakAudience:       "cds-service",
+		KeycloakRequiredRole:   "cds-admin",
+		KeycloakAdminUIClient:  "cds-admin-ui",
+		DPoPRequired:           true,
+		DPoPJtiCacheTTLSeconds: 300,
+		DPoPProofMaxAgeSeconds: 300,
+		DPoPClockSkewSeconds:   30,
+		JWKSCacheTTLSeconds:    300,
+		TrustedProxyCIDRs:      []string{"127.0.0.1/32"},
+	}
+	mtlsOnly := RequireClientCert(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	t.Run("trusted remote with SUCCESS is allowed by mTLS middleware", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/devices/abc", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("X-SSL-Client-Verify", "SUCCESS")
+		rr := httptest.NewRecorder()
+		mtlsOnly.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("got %d want %d", rr.Code, http.StatusNoContent)
+		}
+	})
+
+	t.Run("trusted remote without SUCCESS is rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/devices/abc", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		rr := httptest.NewRecorder()
+		mtlsOnly.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("got %d want %d", rr.Code, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("untrusted remote cannot spoof SUCCESS", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/devices/abc", nil)
+		req.RemoteAddr = "203.0.113.10:12345"
+		req.Header.Set("X-SSL-Client-Verify", "SUCCESS")
+		rr := httptest.NewRecorder()
+		mtlsOnly.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("got %d want %d", rr.Code, http.StatusUnauthorized)
+		}
+	})
 }
 
 // Optional: test unknown route

@@ -6,9 +6,11 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
+	"cds/internal/adapters/postgres"
 	"cds/internal/services"
 )
 
@@ -72,7 +74,11 @@ func (h *DeviceHandler) Add(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.AddOwned(req.Serial, req.ControllerEndpoint, ownerScope); err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		if errors.Is(err, postgres.ErrDeviceOwnerConflict) {
+			http.Error(w, "device already exists for another owner", http.StatusConflict)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusCreated)

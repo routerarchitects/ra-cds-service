@@ -799,21 +799,31 @@ func TestRouteBehaviorWithNewAuthContract(t *testing.T) {
 	})
 
 	t.Run("device-facing endpoint uses mTLS header simulation and no DPoP", func(t *testing.T) {
-		mtlsOnly := RequireClientCert(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mtlsOnly := RequireClientCert(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		}))
 		reqNoCert := httptest.NewRequest(http.MethodGet, "/v1/devices/abc", nil)
+		reqNoCert.RemoteAddr = "127.0.0.1:12345"
 		rrNoCert := httptest.NewRecorder()
 		mtlsOnly.ServeHTTP(rrNoCert, reqNoCert)
 		if rrNoCert.Code != http.StatusUnauthorized {
 			t.Fatalf("without cert got %d body=%q", rrNoCert.Code, rrNoCert.Body.String())
 		}
 		reqWithCert := httptest.NewRequest(http.MethodGet, "/v1/devices/abc", nil)
+		reqWithCert.RemoteAddr = "127.0.0.1:12345"
 		reqWithCert.Header.Set("X-SSL-Client-Verify", "SUCCESS")
 		rrWithCert := httptest.NewRecorder()
 		mtlsOnly.ServeHTTP(rrWithCert, reqWithCert)
 		if rrWithCert.Code != http.StatusNoContent {
 			t.Fatalf("with cert got %d body=%q", rrWithCert.Code, rrWithCert.Body.String())
+		}
+		reqSpoofed := httptest.NewRequest(http.MethodGet, "/v1/devices/abc", nil)
+		reqSpoofed.RemoteAddr = "203.0.113.10:12345"
+		reqSpoofed.Header.Set("X-SSL-Client-Verify", "SUCCESS")
+		rrSpoofed := httptest.NewRecorder()
+		mtlsOnly.ServeHTTP(rrSpoofed, reqSpoofed)
+		if rrSpoofed.Code != http.StatusUnauthorized {
+			t.Fatalf("spoofed cert header got %d body=%q", rrSpoofed.Code, rrSpoofed.Body.String())
 		}
 	})
 }

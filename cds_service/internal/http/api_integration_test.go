@@ -174,7 +174,7 @@ func jwkThumbprintRSA(pub *rsa.PublicKey) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-func buildAdminHeaders(method, path string, tokenSigner *keyMaterial, dpopKey *rsa.PrivateKey) map[string]string {
+func buildAdminHeadersForSubject(method, path string, tokenSigner *keyMaterial, dpopKey *rsa.PrivateKey, subject string) map[string]string {
 	now := time.Now().Unix()
 	nonce := make([]byte, 8)
 	if _, err := rand.Read(nonce); err != nil {
@@ -188,7 +188,7 @@ func buildAdminHeaders(method, path string, tokenSigner *keyMaterial, dpopKey *r
 		"kid": tokenSigner.kid,
 	}, map[string]any{
 		"iss": "https://keycloak.example.com/realms/cds",
-		"sub": "admin-subject-1",
+		"sub": subject,
 		"aud": []string{"cds-service"},
 		"exp": now + 3600,
 		"iat": now,
@@ -224,6 +224,10 @@ func buildAdminHeaders(method, path string, tokenSigner *keyMaterial, dpopKey *r
 		"Content-Type":  "application/json",
 		"Accept":        "application/json",
 	}
+}
+
+func buildAdminHeaders(method, path string, tokenSigner *keyMaterial, dpopKey *rsa.PrivateKey) map[string]string {
+	return buildAdminHeadersForSubject(method, path, tokenSigner, dpopKey, "admin-subject-1")
 }
 
 func TestCRUDAndDeviceFacingAPIIntegration(t *testing.T) {
@@ -283,5 +287,43 @@ func TestCRUDAndDeviceFacingAPIIntegration(t *testing.T) {
 	}
 	if len(listed) != 0 {
 		t.Fatalf("expected empty list after delete, got %#v", listed)
+	}
+}
+
+func TestPostOwnershipConflictPreventsTakeover(t *testing.T) {
+	router, db, signer, dpopKey := newIntegrationRouter(t)
+	adminA := "admin-subject-a"
+	adminB := "admin-subject-b"
+
+	postA1 := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"openwifi-a.routerarchitects.com"}`
+	rr := performJSONRequest(router, http.MethodPost, "/v1/device", postA1, buildAdminHeadersForSubject(http.MethodPost, "/v1/device", signer, dpopKey, adminA))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("admin A first POST got %d, want %d (body=%s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+
+	postA2 := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"openwifi-a2.routerarchitects.com"}`
+	rr = performJSONRequest(router, http.MethodPost, "/v1/device", postA2, buildAdminHeadersForSubject(http.MethodPost, "/v1/device", signer, dpopKey, adminA))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("admin A second POST got %d, want %d (body=%s)", rr.Code, http.StatusCreated, rr.Body.String())
+	}
+
+	postB := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"openwifi-b.routerarchitects.com"}`
+	rr = performJSONRequest(router, http.MethodPost, "/v1/device", postB, buildAdminHeadersForSubject(http.MethodPost, "/v1/device", signer, dpopKey, adminB))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("admin B POST got %d, want %d (body=%s)", rr.Code, http.StatusConflict, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "device already exists for another owner") {
+		t.Fatalf("admin B POST body=%q", rr.Body.String())
+	}
+
+	var ownerScope, endpoint string
+	if err := db.QueryRow(`SELECT owner_scope, controller_endpoint FROM public.devices WHERE serial=$1`, testSerial).Scan(&ownerScope, &endpoint); err != nil {
+		t.Fatalf("query device row: %v", err)
+	}
+	if ownerScope != adminA {
+		t.Fatalf("owner_scope changed: got=%q want=%q", ownerScope, adminA)
+	}
+	if endpoint != "openwifi-a2.routerarchitects.com" {
+		t.Fatalf("controller_endpoint changed by admin B: got=%q", endpoint)
 	}
 }
