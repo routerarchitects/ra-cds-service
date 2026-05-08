@@ -140,7 +140,7 @@ func newIntegrationRouter(t *testing.T) (http.Handler, *sql.DB, *keyMaterial, *r
 		DPoPProofMaxAgeSeconds: 300,
 		DPoPClockSkewSeconds:   30,
 		JWKSCacheTTLSeconds:    300,
-		TrustedProxyCIDRs:      []string{"10.0.0.0/8"},
+		TrustedProxyCIDRs:      []string{"10.0.0.0/8", "127.0.0.1/32"},
 	}
 	t.Cleanup(jwks.Close)
 	t.Cleanup(func() { _ = db.Close() })
@@ -251,10 +251,12 @@ func TestCRUDAndDeviceFacingAPIIntegration(t *testing.T) {
 		t.Fatalf("unexpected list response: %#v", listed)
 	}
 
-	rr = performJSONRequest(router, http.MethodGet, "/v1/devices/B4:6A:D4:45:F0:19", "", map[string]string{
-		"X-SSL-Client-Verify": "SUCCESS",
-		"Accept":              "application/json",
-	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/devices/B4:6A:D4:45:F0:19", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("X-SSL-Client-Verify", "SUCCESS")
+	req.Header.Set("Accept", "application/json")
+	rr = httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET /v1/devices/{serial} got %d, want %d (body=%s)", rr.Code, http.StatusOK, rr.Body.String())
 	}
