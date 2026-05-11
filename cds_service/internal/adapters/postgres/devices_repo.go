@@ -14,6 +14,8 @@ type Repo struct{ db *sql.DB }
 
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
+var ErrDeviceOwnerConflict = errors.New("device already exists for another owner")
+
 // Device-facing lookup (no owner check)
 func (r *Repo) GetEndpointBySerial(ctx context.Context, serial string) (string, error) {
 	var controllerEndpoint string
@@ -29,23 +31,29 @@ func (r *Repo) GetEndpointBySerial(ctx context.Context, serial string) (string, 
 	return controllerEndpoint, nil
 }
 
-// Admin-facing (scoped to owner token)
+// Admin-facing (scoped to owner scope)
 func (r *Repo) AddDevice(ctx context.Context, serial, controllerEndpoint, owner string) error {
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO public.devices (serial, controller_endpoint, owner_token)
+	res, err := r.db.ExecContext(ctx,
+		`INSERT INTO public.devices (serial, controller_endpoint, owner_scope)
          VALUES (lower($1), $2, $3)
          ON CONFLICT (serial) DO UPDATE
-           SET controller_endpoint = EXCLUDED.controller_endpoint,
-               owner_token = EXCLUDED.owner_token`,
+           SET controller_endpoint = EXCLUDED.controller_endpoint
+         WHERE public.devices.owner_scope = EXCLUDED.owner_scope`,
 		serial, controllerEndpoint, owner)
-	return err
+	if err != nil {
+		return err
+	}
+	if rows, _ := res.RowsAffected(); rows == 0 {
+		return ErrDeviceOwnerConflict
+	}
+	return nil
 }
 
 func (r *Repo) UpdateDevice(ctx context.Context, serial, controllerEndpoint, owner string) error {
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE public.devices
            SET controller_endpoint=$2
-         WHERE serial=lower($1) AND owner_token=$3`,
+         WHERE serial=lower($1) AND owner_scope=$3`,
 		serial, controllerEndpoint, owner)
 	if err != nil {
 		return err
@@ -58,7 +66,7 @@ func (r *Repo) UpdateDevice(ctx context.Context, serial, controllerEndpoint, own
 
 func (r *Repo) DeleteDevice(ctx context.Context, serial, owner string) error {
 	res, err := r.db.ExecContext(ctx,
-		`DELETE FROM public.devices WHERE serial=lower($1) AND owner_token=$2`,
+		`DELETE FROM public.devices WHERE serial=lower($1) AND owner_scope=$2`,
 		serial, owner)
 	if err != nil {
 		return err
@@ -73,7 +81,7 @@ func (r *Repo) ListDevicesByOwner(ctx context.Context, owner string) ([]map[stri
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT serial, controller_endpoint
            FROM public.devices
-          WHERE owner_token=$1
+          WHERE owner_scope=$1
           ORDER BY serial ASC`, owner)
 	if err != nil {
 		return nil, err
@@ -93,4 +101,3 @@ func (r *Repo) ListDevicesByOwner(ctx context.Context, owner string) ([]map[stri
 	}
 	return res, rows.Err()
 }
-

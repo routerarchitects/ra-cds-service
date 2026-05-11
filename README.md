@@ -30,6 +30,7 @@ This service runs Go APIs (PostgreSQL-backed) fronted by Nginx (TLS).
 `ra-cds-service` exposes HTTPS APIs to:
 
 -   Manage devices (add, update, delete, list) using the unified `/v1/device` admin API.
+    - `DELETE` uses `/v1/device/{serial}`.
 -   Serves the device → controller endpoint mappings.
 
 
@@ -115,8 +116,8 @@ services:
       context: ../cds_service
       dockerfile: Dockerfile
     container_name: cds-api
-    ports:
-      - "8081:8080"
+    expose:
+      - "8080"
     env_file:
       - .env
     depends_on:
@@ -152,7 +153,7 @@ CREATE TABLE IF NOT EXISTS public.devices (
   controller_endpoint TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  owner_token TEXT
+  owner_scope TEXT
 );
 
 -- Lowercase serial
@@ -181,9 +182,6 @@ CREATE TRIGGER set_updated_at
 BEFORE UPDATE ON public.devices
 FOR EACH ROW EXECUTE PROCEDURE trg_set_updated_at();
 
--- Ensure column exists if old DB (idempotent)
-ALTER TABLE public.devices
-  ADD COLUMN IF NOT EXISTS owner_token TEXT;
 ```
 
 ### `cds_deploy/nginx/Dockerfile`
@@ -216,7 +214,7 @@ server {
     }
 }
 
-# Admin-facing API (no client cert)
+# Admin-facing API (no client cert, Keycloak DPoP headers are forwarded)
 server {
     listen 5443 ssl;
     server_name localhost;
@@ -225,7 +223,10 @@ server {
     ssl_certificate_key    /etc/ssl/private/server-key.pem;
     ssl_verify_client      off;
 
-    location = /v1/device {
+    location /v1/device {
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host  $host;
+        proxy_set_header X-Forwarded-Port  $server_port;
         proxy_pass http://cds-api:8080;
     }
 }
@@ -239,14 +240,50 @@ POSTGRES_DSN=postgres://postgres:password@postgres:5432/cds?sslmode=disable
 # Go service listen address (must match EXPOSE 8080)
 HTTP_ADDR=:8080
 
-# Url to validate security token
-VALIDATE_TOKEN_URL=https://openwifi3.routerarchitects.com:16001/api/v1/validateToken
+# Auth mode
+AUTH_MODE=keycloak-dpop
+
+# Keycloak JWT validation
+KEYCLOAK_ISSUER_URL=https://keycloak.example.com/realms/cds
+KEYCLOAK_JWKS_URL=https://keycloak.example.com/realms/cds/protocol/openid-connect/certs
+KEYCLOAK_AUDIENCE=cds-service
+KEYCLOAK_REQUIRED_ROLE=cds-admin
+KEYCLOAK_ADMIN_UI_CLIENT_ID=cds-admin-ui
+KEYCLOAK_ACCESS_TOKEN_ALG=RS256
+
+# DPoP validation
+DPOP_REQUIRED=true
+DPOP_ALLOWED_ALGS=ES256
+DPOP_JTI_CACHE_TTL_SECONDS=300
+DPOP_PROOF_MAX_AGE_SECONDS=300
+DPOP_CLOCK_SKEW_SECONDS=30
+
+# JWKS cache
+JWKS_CACHE_TTL_SECONDS=300
+
+# KEYCLOAK_JWKS_URL should use HTTPS in deployed environments.
+# HTTP is allowed only for localhost/loopback testing.
+
+# Trusted proxy CIDRs for forwarded headers.
+# Replace this with the actual Nginx/proxy CIDR for your deployment.
+TRUSTED_PROXY_CIDRS=10.42.3.0/24
 ```
 ---------
 
 **Note:**
- Set VALIDATE_TOKEN_URL to the exact token-validation endpoint of your deployment(If any).
-The CDS service will call this URL to verify that the provided security-Token is valid.
+`cds-api` must stay internal and should only be reachable through Nginx/trusted proxies. Use
+Docker internal networking, firewall rules, or Kubernetes NetworkPolicy to prevent direct client
+access. CDS trusts `X-SSL-Client-Verify` only when the request source IP is within
+`TRUSTED_PROXY_CIDRS`.
+
+Device-facing lookup is currently global for any successfully mTLS-verified device client. CDS does not bind the verified client certificate identity to the requested `/v1/devices/{serial}` value. Per-device certificate-to-serial authorization is planned as a follow-up hardening step.
+
+DPoP replay protection uses an in-memory `jti` cache and is instance-local. It is supported for single-instance CDS deployments only; multi-instance deployments require a shared cache, such as Redis.
+
+Set the Keycloak and DPoP values to your deployment-specific values.
+Admin API requests must include both:
+- `Authorization: DPoP <keycloak_access_token>`
+- `DPoP: <dpop_proof_jwt>`
 
 ## Generate & Place Server Certificates
 
@@ -286,7 +323,7 @@ docker-compose up -d
 
 ```
 docker-compose logs -f postgres
-docker-compose logs -f cds_service
+docker-compose logs -f cds-api
 docker-compose logs -f nginx
 ```
 
@@ -295,29 +332,33 @@ docker-compose logs -f nginx
 ## Verify
 
 ### Important Notes:
-#### Security Token Requirement:
-- The CDS service enforces strict access control.
-- All **add / update / delete / list** operations require a valid security-token belonging to a user with the **root** role.
-- Always make sure you are using a valid root security-token before running any admin operations.
+#### Admin Auth Requirement:
+- The CDS service enforces Keycloak DPoP auth for admin APIs.
+- All **add / update / delete / list** operations require:
+  - `Authorization: DPoP <keycloak_access_token>`
+  - `DPoP: <dpop_proof_jwt>`
+- Access token must include the configured admin role (`KEYCLOAK_REQUIRED_ROLE`) for audience `KEYCLOAK_AUDIENCE`.
 #### API Method Mapping (Admin APIs)
 The admin device API uses a single resource path with method-based routing:
 
 GET    /v1/device        -> list devices
 POST   /v1/device        -> create or upsert device
 PUT    /v1/device        -> update existing device
-DELETE /v1/device        -> delete device
+DELETE /v1/device/{serial} -> delete device
 
 ### Add device
 
 ```
 curl -k -X POST https://localhost:5443/v1/device \
-  -H "X-Auth-Token: <use valid root security-token here>" \
+  -H "Authorization: DPoP <keycloak_access_token>" \
+  -H "DPoP: <dpop_proof_jwt>" \
   -H "Content-Type: application/json" \
   -d '{"serial":"<device-serial-no.>", "controller_endpoint":"<controller-url>"}'
 
 Ex:
 curl -k -X POST https://localhost:5443/v1/device \
-  -H "X-Auth-Token: <use valid root security-token here>" \
+  -H "Authorization: DPoP <keycloak_access_token>" \
+  -H "DPoP: <dpop_proof_jwt>" \
   -H "Content-Type: application/json" \
   -d '{"serial":"b4:6a:d4:45:f0:19", "controller_endpoint":"openwifi3.routerarchitects.com"}'
 ```
@@ -326,7 +367,8 @@ curl -k -X POST https://localhost:5443/v1/device \
 
 ```
 curl -k -X PUT https://localhost:5443/v1/device \
-  -H "X-Auth-Token: <use valid root security-token here>" \
+  -H "Authorization: DPoP <keycloak_access_token>" \
+  -H "DPoP: <dpop_proof_jwt>" \
   -H "Content-Type: application/json" \
   -d '{"serial":"b4:6a:d4:45:f0:19", "controller_endpoint":"openwifi3.routerarchitects.com"}'
   ```
@@ -334,17 +376,17 @@ curl -k -X PUT https://localhost:5443/v1/device \
 ### Delete device
 
 ```
-curl -k -X DELETE https://localhost:5443/v1/device \
-  -H "X-Auth-Token: <use valid root security-token here>" \
-  -H "Content-Type: application/json" \
-  -d '{"serial":"b4:6a:d4:45:f0:19"}'
+curl -k -X DELETE "https://localhost:5443/v1/device/b4:6a:d4:45:f0:19" \
+  -H "Authorization: DPoP <keycloak_access_token>" \
+  -H "DPoP: <dpop_proof_jwt>"
 ```
 
-### List all devices (Added with security token)
+### List all devices (admin DPoP request)
 
 ```
 curl -k https://localhost:5443/v1/device \
-  -H "X-Auth-Token: <use valid root security-token here>"
+  -H "Authorization: DPoP <keycloak_access_token>" \
+  -H "DPoP: <dpop_proof_jwt>"
 ```
 
 ### Get controller url from device serial no.(Use device operational certs for mTLS)
@@ -368,7 +410,7 @@ curl -k https://localhost:4443/v1/devices/b4:6a:d4:45:f0:19 \
   `/etc/init.d/cloud_rescovery restart`
 **Expected Behaviour:**
 Response will be stored in gateway.json if already there is entry for device
-serial no.in db with a valid security token.
+serial no.in db.
 ----------
 
 
@@ -392,4 +434,3 @@ serial no.in db with a valid security token.
 ## License
 - SPDX-License-Identifier: AGPL-3.0 OR LicenseRef-Commercial
 - Copyright (c) 2025 Infernet Systems Pvt Ltd
-

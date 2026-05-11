@@ -5,26 +5,25 @@
 package main
 
 import (
-    "log"
-    "net/http"
+	"log"
+	"net/http"
 
-    "cds/internal/app"
-    "cds/internal/config"
+	"cds/internal/app"
+	"cds/internal/config"
 )
 
 func main() {
-    cfg, err := config.Load()
-    if err != nil {
-        log.Fatal(err)
-    }
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    a, err := app.Init(cfg)
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer a.DB.Close()
+	a, err := app.Init(cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer a.DB.Close()
 
-    log.Printf("CDS unified API listening on %s", cfg.HTTPAddr)
-    log.Fatal(http.ListenAndServe(cfg.HTTPAddr, a.Mux))
+	log.Printf("CDS unified API listening on %s", cfg.HTTPAddr)
+	log.Fatal(http.ListenAndServe(cfg.HTTPAddr, a.Mux))
 }
-

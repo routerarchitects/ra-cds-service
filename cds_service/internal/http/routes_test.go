@@ -13,9 +13,22 @@ import (
 )
 
 // Create router for testing
-func newTestRouter() *http.ServeMux {
+func newTestRouter() http.Handler {
 	cfg := &config.Config{
-		ValidateTokenURL: "http://127.0.0.1/validate",
+		AuthMode:               "keycloak-dpop",
+		KeycloakIssuerURL:      "https://issuer.example/realms/cds",
+		KeycloakJWKSURL:        "http://127.0.0.1/keys",
+		KeycloakAudience:       "cds-service",
+		KeycloakRequiredRole:   "cds-admin",
+		KeycloakAdminUIClient:  "cds-admin-ui",
+		KeycloakAccessTokenAlg: "RS256",
+		DPoPAllowedAlgs:        []string{"ES256", "RS256"},
+		DPoPRequired:           true,
+		DPoPJtiCacheTTLSeconds: 300,
+		DPoPProofMaxAgeSeconds: 300,
+		DPoPClockSkewSeconds:   30,
+		JWKSCacheTTLSeconds:    300,
+		TrustedProxyCIDRs:      []string{"10.0.0.0/8", "127.0.0.1/32"},
 	}
 	return NewRouterWithConfig(cfg, nil)
 }
@@ -23,6 +36,7 @@ func newTestRouter() *http.ServeMux {
 // Helper to check status code
 func assertStatus(t *testing.T, router http.Handler, method, path string, want int) {
 	req := httptest.NewRequest(method, path, nil)
+	req.RemoteAddr = "127.0.0.1:12345"
 	rr := httptest.NewRecorder()
 
 	router.ServeHTTP(rr, req)
@@ -43,11 +57,11 @@ func TestHealth(t *testing.T) {
 func TestAdminMethodEnforcement(t *testing.T) {
 	r := newTestRouter()
 
-	// Allowed methods reach middleware but fail auth (no token)
-	assertStatus(t, r, "GET", "/v1/device", http.StatusForbidden)
-	assertStatus(t, r, "POST", "/v1/device", http.StatusForbidden)
-	assertStatus(t, r, "PUT", "/v1/device", http.StatusForbidden)
-	assertStatus(t, r, "DELETE", "/v1/device", http.StatusForbidden)
+	// Allowed methods reach middleware but fail auth (no Authorization)
+	assertStatus(t, r, "GET", "/v1/device", http.StatusUnauthorized)
+	assertStatus(t, r, "POST", "/v1/device", http.StatusUnauthorized)
+	assertStatus(t, r, "PUT", "/v1/device", http.StatusUnauthorized)
+	assertStatus(t, r, "DELETE", "/v1/device/abc", http.StatusUnauthorized)
 
 	// Unsupported method → 405
 	assertStatus(t, r, "PATCH", "/v1/device", http.StatusMethodNotAllowed)
@@ -64,8 +78,87 @@ func TestDeviceLookupMethodEnforcement(t *testing.T) {
 	assertStatus(t, r, "POST", "/v1/devices/abc", http.StatusMethodNotAllowed)
 }
 
+func TestDeviceLookupTrustedProxyRequirement(t *testing.T) {
+	cfg := &config.Config{
+		AuthMode:               "keycloak-dpop",
+		KeycloakIssuerURL:      "https://issuer.example/realms/cds",
+		KeycloakJWKSURL:        "http://127.0.0.1/keys",
+		KeycloakAudience:       "cds-service",
+		KeycloakRequiredRole:   "cds-admin",
+		KeycloakAdminUIClient:  "cds-admin-ui",
+		DPoPRequired:           true,
+		DPoPJtiCacheTTLSeconds: 300,
+		DPoPProofMaxAgeSeconds: 300,
+		DPoPClockSkewSeconds:   30,
+		JWKSCacheTTLSeconds:    300,
+		TrustedProxyCIDRs:      []string{"127.0.0.1/32"},
+	}
+	mtlsOnly := RequireClientCert(cfg, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	t.Run("trusted remote with SUCCESS is allowed by mTLS middleware", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/devices/abc", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("X-SSL-Client-Verify", "SUCCESS")
+		rr := httptest.NewRecorder()
+		mtlsOnly.ServeHTTP(rr, req)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("got %d want %d", rr.Code, http.StatusNoContent)
+		}
+	})
+
+	t.Run("trusted remote without SUCCESS is rejected", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/devices/abc", nil)
+		req.RemoteAddr = "127.0.0.1:12345"
+		rr := httptest.NewRecorder()
+		mtlsOnly.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("got %d want %d", rr.Code, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("untrusted remote cannot spoof SUCCESS", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/devices/abc", nil)
+		req.RemoteAddr = "203.0.113.10:12345"
+		req.Header.Set("X-SSL-Client-Verify", "SUCCESS")
+		rr := httptest.NewRecorder()
+		mtlsOnly.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("got %d want %d", rr.Code, http.StatusUnauthorized)
+		}
+	})
+}
+
 // Optional: test unknown route
 func TestUnknownRoute(t *testing.T) {
 	r := newTestRouter()
 	assertStatus(t, r, "GET", "/unknown", http.StatusNotFound)
+}
+
+func TestRequestIDGeneratedWhenAbsent(t *testing.T) {
+	r := newTestRouter()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /health got %d", rr.Code)
+	}
+	if rr.Header().Get("X-Request-Id") == "" {
+		t.Fatalf("expected X-Request-Id to be set")
+	}
+}
+
+func TestRequestIDPropagatedWhenProvided(t *testing.T) {
+	r := newTestRouter()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("X-Request-Id", "req-123")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /health got %d", rr.Code)
+	}
+	if got := rr.Header().Get("X-Request-Id"); got != "req-123" {
+		t.Fatalf("expected propagated request id, got %q", got)
+	}
 }

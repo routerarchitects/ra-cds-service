@@ -21,7 +21,7 @@ import (
 
 type App struct {
 	DB  *sql.DB
-	Mux *http.ServeMux
+	Mux http.Handler
 }
 
 func pingWithRetry(db *sql.DB, attempts int, delay time.Duration) error {
@@ -55,4 +55,3 @@ func Init(cfg *config.Config) (*App, error) {
 	log.Infof("Initialized CDS service")
 	return &App{DB: db, Mux: mux}, nil
 }
-
