@@ -264,8 +264,9 @@ JWKS_CACHE_TTL_SECONDS=300
 # KEYCLOAK_JWKS_URL should use HTTPS in deployed environments.
 # HTTP is allowed only for localhost/loopback testing.
 
-# Trusted proxies for forwarded headers (CDS is behind Nginx in this setup)
-TRUSTED_PROXY_CIDRS=172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
+# Trusted proxy CIDRs for forwarded headers.
+# Replace this with the actual Nginx/proxy CIDR for your deployment.
+TRUSTED_PROXY_CIDRS=10.42.3.0/24
 ```
 ---------
 

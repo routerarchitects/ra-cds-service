@@ -142,7 +142,7 @@ func newIntegrationRouter(t *testing.T) (http.Handler, *sql.DB, *keyMaterial, *r
 		DPoPProofMaxAgeSeconds: 300,
 		DPoPClockSkewSeconds:   30,
 		JWKSCacheTTLSeconds:    300,
-		TrustedProxyCIDRs:      []string{"10.0.0.0/8", "127.0.0.1/32"},
+		TrustedProxyCIDRs:      []string{"127.0.0.1/32"},
 	}
 	t.Cleanup(jwks.Close)
 	t.Cleanup(func() { _ = db.Close() })
