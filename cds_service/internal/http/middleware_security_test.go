@@ -5,6 +5,9 @@
 package http
 
 import (
+	"bytes"
+	"cds/internal/adapters/postgres"
+	"cds/internal/services"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -137,6 +140,7 @@ type tokenOpts struct {
 	roles        []string
 	includeCNF   bool
 	kid          string
+	alg          string
 	expiryOffset time.Duration
 }
 
@@ -195,8 +199,12 @@ func buildAccessToken(t *testing.T, signer *testKeyMaterial, dpopPub *rsa.Public
 	if opts.kid != "" {
 		kid = opts.kid
 	}
+	alg := "RS256"
+	if opts.alg != "" {
+		alg = opts.alg
+	}
 	return signJWTForTest(t, signer.key, map[string]any{
-		"alg": "RS256",
+		"alg": alg,
 		"typ": "JWT",
 		"kid": kid,
 	}, payload)
@@ -208,6 +216,7 @@ type dpopOpts struct {
 	iat       int64
 	jti       string
 	ath       string
+	alg       string
 	tamperSig bool
 }
 
@@ -227,7 +236,12 @@ func buildDPoPProof(t *testing.T, key *rsa.PrivateKey, opts dpopOpts) string {
 		jti = "jti-" + base64.RawURLEncoding.EncodeToString([]byte(time.Now().String()))
 	}
 	proof := signJWTForTest(t, key, map[string]any{
-		"alg": "RS256",
+		"alg": func() string {
+			if opts.alg != "" {
+				return opts.alg
+			}
+			return "RS256"
+		}(),
 		"typ": "dpop+jwt",
 		"jwk": map[string]any{
 			"kty": "RSA",
@@ -268,6 +282,8 @@ func newMiddlewareTestConfig(jwksURL string, dpopRequired bool) *config.Config {
 		KeycloakAudience:       "cds-service",
 		KeycloakRequiredRole:   "cds-admin",
 		KeycloakAdminUIClient:  "cds-admin-ui",
+		KeycloakAccessTokenAlg: "RS256",
+		DPoPAllowedAlgs:        []string{"ES256", "RS256"},
 		DPoPRequired:           dpopRequired,
 		DPoPJtiCacheTTLSeconds: 300,
 		DPoPProofMaxAgeSeconds: 300,
@@ -283,6 +299,38 @@ func executeAdminRequest(t *testing.T, cfg *config.Config, method, target, autho
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	req := httptest.NewRequest(method, target, nil)
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	if dpop != "" {
+		req.Header.Set("DPoP", dpop)
+	}
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	return rr
+}
+
+func executeAdminRequestWithBody(t *testing.T, cfg *config.Config, method, target, authorization, dpop, remoteAddr string, extraHeaders map[string]string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	svc := services.New(postgres.NewRepo(nil))
+	handler := NewDeviceHandler(svc)
+	var next http.HandlerFunc
+	switch method {
+	case http.MethodPost:
+		next = handler.Add
+	case http.MethodPut:
+		next = handler.Update
+	default:
+		t.Fatalf("unsupported method: %s", method)
+	}
+	h := RequireKeycloakDPoPAdmin(cfg, next)
+	req := httptest.NewRequest(method, target, bytes.NewReader(body))
 	if authorization != "" {
 		req.Header.Set("Authorization", authorization)
 	}
@@ -373,6 +421,56 @@ func TestAdminJWTValidationFailures(t *testing.T) {
 		token := buildAccessToken(t, tokenKey, dpopKey.key.Public().(*rsa.PublicKey), tokenOpts{includeCNF: false})
 		rr := executeAdminRequest(t, cfg, http.MethodGet, "http://example.com/v1/device", "DPoP "+token, "", "", nil)
 		if rr.Code != http.StatusUnauthorized || !strings.Contains(rr.Body.String(), "invalid access token") {
+			t.Fatalf("got %d body=%q", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("access token with non configured alg rejected", func(t *testing.T) {
+		cfg := newMiddlewareTestConfig(srv.URL, false)
+		cfg.KeycloakAccessTokenAlg = "RS256"
+		token := buildAccessToken(t, tokenKey, dpopKey.key.Public().(*rsa.PublicKey), tokenOpts{includeCNF: true, alg: "ES256"})
+		rr := executeAdminRequest(t, cfg, http.MethodGet, "http://example.com/v1/device", "DPoP "+token, "", "", nil)
+		if rr.Code != http.StatusUnauthorized || !strings.Contains(rr.Body.String(), "invalid access token") {
+			t.Fatalf("got %d body=%q", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("POST body larger than limit returns 413", func(t *testing.T) {
+		cfg := newMiddlewareTestConfig(srv.URL, true)
+		accessToken := buildAccessToken(t, tokenKey, dpopKey.key.Public().(*rsa.PublicKey), tokenOpts{includeCNF: true})
+		ath := hashAccessToken(accessToken)
+		proof := buildDPoPProof(t, dpopKey.key, dpopOpts{
+			alg:    "RS256",
+			method: http.MethodPost,
+			htu:    "http://example.com/v1/device",
+			ath:    ath,
+			jti:    "big-post-body",
+		})
+		bigPayload := []byte(`{"serial":"abc","controller_endpoint":"` + strings.Repeat("x", int(maxAdminRequestBodyBytes)) + `"}`)
+		rr := executeAdminRequestWithBody(t, cfg, http.MethodPost, "http://example.com/v1/device", "DPoP "+accessToken, proof, "", map[string]string{
+			"Content-Type": "application/json",
+		}, bigPayload)
+		if rr.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rr.Body.String(), "request body too large") {
+			t.Fatalf("got %d body=%q", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("PUT body larger than limit returns 413", func(t *testing.T) {
+		cfg := newMiddlewareTestConfig(srv.URL, true)
+		accessToken := buildAccessToken(t, tokenKey, dpopKey.key.Public().(*rsa.PublicKey), tokenOpts{includeCNF: true})
+		ath := hashAccessToken(accessToken)
+		proof := buildDPoPProof(t, dpopKey.key, dpopOpts{
+			alg:    "RS256",
+			method: http.MethodPut,
+			htu:    "http://example.com/v1/device",
+			ath:    ath,
+			jti:    "big-put-body",
+		})
+		bigPayload := []byte(`{"serial":"abc","controller_endpoint":"` + strings.Repeat("x", int(maxAdminRequestBodyBytes)) + `"}`)
+		rr := executeAdminRequestWithBody(t, cfg, http.MethodPut, "http://example.com/v1/device", "DPoP "+accessToken, proof, "", map[string]string{
+			"Content-Type": "application/json",
+		}, bigPayload)
+		if rr.Code != http.StatusRequestEntityTooLarge || !strings.Contains(rr.Body.String(), "request body too large") {
 			t.Fatalf("got %d body=%q", rr.Code, rr.Body.String())
 		}
 	})
@@ -510,6 +608,38 @@ func TestDPoPValidationScenarios(t *testing.T) {
 			tamperSig: true,
 		})
 		rr := executeAdminRequest(t, cfg, http.MethodGet, "http://example.com/v1/device", "DPoP "+accessToken, proof, "", nil)
+		if rr.Code != http.StatusUnauthorized || !strings.Contains(rr.Body.String(), "invalid DPoP proof") {
+			t.Fatalf("got %d body=%q", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("DPoP proof with allowed alg accepted", func(t *testing.T) {
+		cfgAllowed := newMiddlewareTestConfig(srv.URL, true)
+		cfgAllowed.DPoPAllowedAlgs = []string{"RS256"}
+		proof := buildDPoPProof(t, dpopKey.key, dpopOpts{
+			alg:    "RS256",
+			method: http.MethodGet,
+			htu:    "http://example.com/v1/device",
+			ath:    ath,
+			jti:    "alg-allowed",
+		})
+		rr := executeAdminRequest(t, cfgAllowed, http.MethodGet, "http://example.com/v1/device", "DPoP "+accessToken, proof, "", nil)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("got %d body=%q", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("DPoP proof with disallowed alg rejected", func(t *testing.T) {
+		cfgDisallowed := newMiddlewareTestConfig(srv.URL, true)
+		cfgDisallowed.DPoPAllowedAlgs = []string{"ES256"}
+		proof := buildDPoPProof(t, dpopKey.key, dpopOpts{
+			alg:    "RS256",
+			method: http.MethodGet,
+			htu:    "http://example.com/v1/device",
+			ath:    ath,
+			jti:    "alg-disallowed",
+		})
+		rr := executeAdminRequest(t, cfgDisallowed, http.MethodGet, "http://example.com/v1/device", "DPoP "+accessToken, proof, "", nil)
 		if rr.Code != http.StatusUnauthorized || !strings.Contains(rr.Body.String(), "invalid DPoP proof") {
 			t.Fatalf("got %d body=%q", rr.Code, rr.Body.String())
 		}

@@ -54,10 +54,18 @@ type updateReq struct {
 	ControllerEndpoint string `json:"controller_endpoint"`
 }
 
+const maxAdminRequestBodyBytes int64 = 1 << 20 // 1 MiB
+
 // POST /v1/device
 func (h *DeviceHandler) Add(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminRequestBodyBytes)
 	var req addReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -87,8 +95,14 @@ func (h *DeviceHandler) Add(w http.ResponseWriter, r *http.Request) {
 
 // PUT /v1/device
 func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminRequestBodyBytes)
 	var req updateReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}

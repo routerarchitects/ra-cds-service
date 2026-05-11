@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -22,6 +23,8 @@ type Config struct {
 	KeycloakAudience       string
 	KeycloakRequiredRole   string
 	KeycloakAdminUIClient  string
+	KeycloakAccessTokenAlg string
+	DPoPAllowedAlgs        []string
 	DPoPRequired           bool
 	DPoPJtiCacheTTLSeconds int
 	DPoPProofMaxAgeSeconds int
@@ -60,6 +63,9 @@ func Load() (*Config, error) {
 	if cfg.KeycloakJWKSURL == "" {
 		return nil, fmt.Errorf("KEYCLOAK_JWKS_URL is required")
 	}
+	if err := validateJWKSURL(cfg.KeycloakJWKSURL); err != nil {
+		return nil, err
+	}
 	if cfg.KeycloakAudience == "" {
 		return nil, fmt.Errorf("KEYCLOAK_AUDIENCE is required")
 	}
@@ -68,6 +74,13 @@ func Load() (*Config, error) {
 	}
 	if cfg.KeycloakAdminUIClient == "" {
 		return nil, fmt.Errorf("KEYCLOAK_ADMIN_UI_CLIENT_ID is required")
+	}
+	var err error
+	if cfg.KeycloakAccessTokenAlg, err = parseJWTAlgEnv("KEYCLOAK_ACCESS_TOKEN_ALG", "RS256"); err != nil {
+		return nil, err
+	}
+	if cfg.DPoPAllowedAlgs, err = parseJWTAlgListEnv("DPOP_ALLOWED_ALGS", []string{"ES256"}); err != nil {
+		return nil, err
 	}
 
 	dpopRequired, err := parseBoolEnv("DPOP_REQUIRED", true)
@@ -142,4 +155,71 @@ func parseListEnv(key string) []string {
 		}
 	}
 	return out
+}
+
+func parseJWTAlgEnv(key, fallback string) (string, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		v = fallback
+	}
+	switch v {
+	case "RS256", "ES256":
+		return v, nil
+	default:
+		return "", fmt.Errorf("%s must be one of RS256, ES256", key)
+	}
+}
+
+func parseJWTAlgListEnv(key string, fallback []string) ([]string, error) {
+	raw, set := os.LookupEnv(key)
+	if !set {
+		return fallback, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		alg := strings.TrimSpace(p)
+		if alg == "" {
+			continue
+		}
+		switch alg {
+		case "RS256", "ES256":
+			out = append(out, alg)
+		default:
+			return nil, fmt.Errorf("%s contains invalid value %q (allowed: RS256, ES256)", key, alg)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%s must not be empty", key)
+	}
+	return out, nil
+}
+
+func validateJWKSURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("KEYCLOAK_JWKS_URL is invalid: %w", err)
+	}
+	if strings.TrimSpace(u.Scheme) == "" {
+		return fmt.Errorf("KEYCLOAK_JWKS_URL must include scheme")
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return fmt.Errorf("KEYCLOAK_JWKS_URL must include host")
+	}
+
+	switch u.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := strings.TrimSpace(strings.ToLower(u.Hostname()))
+		if host == "localhost" {
+			return nil
+		}
+		if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+		return fmt.Errorf("KEYCLOAK_JWKS_URL must use https unless host is localhost/loopback")
+	default:
+		return fmt.Errorf("KEYCLOAK_JWKS_URL must use http or https")
+	}
 }

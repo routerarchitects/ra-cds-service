@@ -135,6 +135,8 @@ func newIntegrationRouter(t *testing.T) (http.Handler, *sql.DB, *keyMaterial, *r
 		KeycloakAudience:       "cds-service",
 		KeycloakRequiredRole:   "cds-admin",
 		KeycloakAdminUIClient:  "cds-admin-ui",
+		KeycloakAccessTokenAlg: "RS256",
+		DPoPAllowedAlgs:        []string{"ES256", "RS256"},
 		DPoPRequired:           true,
 		DPoPJtiCacheTTLSeconds: 300,
 		DPoPProofMaxAgeSeconds: 300,

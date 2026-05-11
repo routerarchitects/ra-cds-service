@@ -231,6 +231,10 @@ func (a *authContext) validateAccessToken(token string) (*tokenClaims, bool, err
 	if kid == "" {
 		return nil, false, errJWTInvalid
 	}
+	alg, _ := header["alg"].(string)
+	if alg != a.cfg.KeycloakAccessTokenAlg {
+		return nil, false, errJWTInvalid
+	}
 
 	key, found, stale := a.jwks.get(kid)
 	if stale {
@@ -307,6 +311,10 @@ func (a *authContext) validateTokenClaims(c *tokenClaims) error {
 func (a *authContext) validateDPoPProof(r *http.Request, proof, accessToken, expectedJKT string) error {
 	header, payload, sig, input, err := parseJWT(proof)
 	if err != nil {
+		return errDPoPInvalid
+	}
+	alg, _ := header["alg"].(string)
+	if !contains(a.cfg.DPoPAllowedAlgs, alg) {
 		return errDPoPInvalid
 	}
 	jwkVal, ok := header["jwk"]

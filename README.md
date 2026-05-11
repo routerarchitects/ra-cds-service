@@ -116,8 +116,8 @@ services:
       context: ../cds_service
       dockerfile: Dockerfile
     container_name: cds-api
-    ports:
-      - "8081:8080"
+    expose:
+      - "8080"
     env_file:
       - .env
     depends_on:
@@ -249,9 +249,11 @@ KEYCLOAK_JWKS_URL=https://keycloak.example.com/realms/cds/protocol/openid-connec
 KEYCLOAK_AUDIENCE=cds-service
 KEYCLOAK_REQUIRED_ROLE=cds-admin
 KEYCLOAK_ADMIN_UI_CLIENT_ID=cds-admin-ui
+KEYCLOAK_ACCESS_TOKEN_ALG=RS256
 
 # DPoP validation
 DPOP_REQUIRED=true
+DPOP_ALLOWED_ALGS=ES256
 DPOP_JTI_CACHE_TTL_SECONDS=300
 DPOP_PROOF_MAX_AGE_SECONDS=300
 DPOP_CLOCK_SKEW_SECONDS=30
@@ -259,16 +261,23 @@ DPOP_CLOCK_SKEW_SECONDS=30
 # JWKS cache
 JWKS_CACHE_TTL_SECONDS=300
 
+# KEYCLOAK_JWKS_URL should use HTTPS in deployed environments.
+# HTTP is allowed only for localhost/loopback testing.
+
 # Trusted proxies for forwarded headers (CDS is behind Nginx in this setup)
 TRUSTED_PROXY_CIDRS=172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
 ```
 ---------
 
 **Note:**
-`cds-api` should remain reachable only on the internal network path behind Nginx. CDS trusts
-`X-SSL-Client-Verify` only when the request source IP is within `TRUSTED_PROXY_CIDRS`.
+`cds-api` must stay internal and should only be reachable through Nginx/trusted proxies. Use
+Docker internal networking, firewall rules, or Kubernetes NetworkPolicy to prevent direct client
+access. CDS trusts `X-SSL-Client-Verify` only when the request source IP is within
+`TRUSTED_PROXY_CIDRS`.
 
 Device-facing lookup is currently global for any successfully mTLS-verified device client. CDS does not bind the verified client certificate identity to the requested `/v1/devices/{serial}` value. Per-device certificate-to-serial authorization is planned as a follow-up hardening step.
+
+DPoP replay protection uses an in-memory `jti` cache and is instance-local. It is supported for single-instance CDS deployments only; multi-instance deployments require a shared cache, such as Redis.
 
 Set the Keycloak and DPoP values to your deployment-specific values.
 Admin API requests must include both:
