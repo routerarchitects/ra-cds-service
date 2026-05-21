@@ -235,7 +235,7 @@ func buildAdminHeaders(method, path string, tokenSigner *keyMaterial, dpopKey *r
 func TestCRUDAndDeviceFacingAPIIntegration(t *testing.T) {
 	router, _, signer, dpopKey := newIntegrationRouter(t)
 
-	postBody := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"` + testEndpoint + `"}`
+	postBody := `{"serial":"` + testSerial + `","controller_endpoint":"` + testEndpoint + `"}`
 	rr := performJSONRequest(router, http.MethodPost, "/v1/device", postBody, buildAdminHeaders(http.MethodPost, "/v1/device", signer, dpopKey))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("POST /v1/device got %d, want %d (body=%s)", rr.Code, http.StatusCreated, rr.Body.String())
@@ -270,13 +270,13 @@ func TestCRUDAndDeviceFacingAPIIntegration(t *testing.T) {
 		t.Fatalf("unexpected device response: %#v", device)
 	}
 
-	putBody := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"openwifi9.routerarchitects.com"}`
+	putBody := `{"serial":"` + testSerial + `","controller_endpoint":"openwifi9.routerarchitects.com"}`
 	rr = performJSONRequest(router, http.MethodPut, "/v1/device", putBody, buildAdminHeaders(http.MethodPut, "/v1/device", signer, dpopKey))
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("PUT /v1/device got %d, want %d (body=%s)", rr.Code, http.StatusNoContent, rr.Body.String())
 	}
 
-	rr = performJSONRequest(router, http.MethodDelete, "/v1/device/B4:6A:D4:45:F0:19", "", buildAdminHeaders(http.MethodDelete, "/v1/device/B4:6A:D4:45:F0:19", signer, dpopKey))
+	rr = performJSONRequest(router, http.MethodDelete, "/v1/device/"+testSerial, "", buildAdminHeaders(http.MethodDelete, "/v1/device/"+testSerial, signer, dpopKey))
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("DELETE /v1/device/{serial} got %d, want %d (body=%s)", rr.Code, http.StatusNoContent, rr.Body.String())
 	}
@@ -299,19 +299,19 @@ func TestPostOwnershipConflictPreventsTakeover(t *testing.T) {
 	adminA := "admin-subject-a"
 	adminB := "admin-subject-b"
 
-	postA1 := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"openwifi-a.routerarchitects.com"}`
+	postA1 := `{"serial":"` + testSerial + `","controller_endpoint":"openwifi-a.routerarchitects.com"}`
 	rr := performJSONRequest(router, http.MethodPost, "/v1/device", postA1, buildAdminHeadersForSubject(http.MethodPost, "/v1/device", signer, dpopKey, adminA))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("admin A first POST got %d, want %d (body=%s)", rr.Code, http.StatusCreated, rr.Body.String())
 	}
 
-	postA2 := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"openwifi-a2.routerarchitects.com"}`
+	postA2 := `{"serial":"` + testSerial + `","controller_endpoint":"openwifi-a2.routerarchitects.com"}`
 	rr = performJSONRequest(router, http.MethodPost, "/v1/device", postA2, buildAdminHeadersForSubject(http.MethodPost, "/v1/device", signer, dpopKey, adminA))
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("admin A second POST got %d, want %d (body=%s)", rr.Code, http.StatusCreated, rr.Body.String())
 	}
 
-	postB := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"openwifi-b.routerarchitects.com"}`
+	postB := `{"serial":"` + testSerial + `","controller_endpoint":"openwifi-b.routerarchitects.com"}`
 	rr = performJSONRequest(router, http.MethodPost, "/v1/device", postB, buildAdminHeadersForSubject(http.MethodPost, "/v1/device", signer, dpopKey, adminB))
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("admin B POST got %d, want %d (body=%s)", rr.Code, http.StatusConflict, rr.Body.String())
@@ -329,5 +329,41 @@ func TestPostOwnershipConflictPreventsTakeover(t *testing.T) {
 	}
 	if endpoint != "openwifi-a2.routerarchitects.com" {
 		t.Fatalf("controller_endpoint changed by admin B: got=%q", endpoint)
+	}
+}
+
+func TestAdminSerialValidationStrictLowercaseMAC(t *testing.T) {
+	router, _, signer, dpopKey := newIntegrationRouter(t)
+
+	postUpper := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"` + testEndpoint + `"}`
+	rr := performJSONRequest(router, http.MethodPost, "/v1/device", postUpper, buildAdminHeaders(http.MethodPost, "/v1/device", signer, dpopKey))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/device uppercase serial got %d, want %d (body=%s)", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "serial is missing, empty, or does not match lowercase MAC-style format aa:bb:cc:dd:ee:ff") {
+		t.Fatalf("POST /v1/device uppercase serial body=%q", rr.Body.String())
+	}
+
+	putUpper := `{"serial":"B4:6A:D4:45:F0:19","controller_endpoint":"openwifi9.routerarchitects.com"}`
+	rr = performJSONRequest(router, http.MethodPut, "/v1/device", putUpper, buildAdminHeaders(http.MethodPut, "/v1/device", signer, dpopKey))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("PUT /v1/device uppercase serial got %d, want %d (body=%s)", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "serial is missing, empty, or does not match lowercase MAC-style format aa:bb:cc:dd:ee:ff") {
+		t.Fatalf("PUT /v1/device uppercase serial body=%q", rr.Body.String())
+	}
+
+	rr = performJSONRequest(
+		router,
+		http.MethodDelete,
+		"/v1/device/B4:6A:D4:45:F0:19",
+		"",
+		buildAdminHeaders(http.MethodDelete, "/v1/device/B4:6A:D4:45:F0:19", signer, dpopKey),
+	)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("DELETE /v1/device/{serial} uppercase serial got %d, want %d (body=%s)", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "serial path parameter is missing, empty, or does not match lowercase MAC-style format aa:bb:cc:dd:ee:ff") {
+		t.Fatalf("DELETE /v1/device/{serial} uppercase serial body=%q", rr.Body.String())
 	}
 }
