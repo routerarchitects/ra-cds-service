@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"cds/internal/adapters/postgres"
@@ -56,6 +57,13 @@ type updateReq struct {
 
 const maxAdminRequestBodyBytes int64 = 1 << 20 // 1 MiB
 
+var adminDeviceSerialPattern = regexp.MustCompile(`^[0-9a-f]{2}(:[0-9a-f]{2}){5}$`)
+
+func normalizeAdminDeviceSerial(serial string) (string, bool) {
+	serial = strings.TrimSpace(serial)
+	return serial, adminDeviceSerialPattern.MatchString(serial)
+}
+
 // POST /v1/device
 func (h *DeviceHandler) Add(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxAdminRequestBodyBytes)
@@ -69,14 +77,19 @@ func (h *DeviceHandler) Add(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	req.Serial = strings.ToLower(strings.TrimSpace(req.Serial))
+	serial, valid := normalizeAdminDeviceSerial(req.Serial)
+	req.Serial = serial
 
 	ownerScope, err := GetOwnerScopeFromCtx(r)
 	if err != nil {
 		http.Error(w, "invalid access token", http.StatusUnauthorized)
 		return
 	}
-	if req.Serial == "" || strings.TrimSpace(req.ControllerEndpoint) == "" {
+	if !valid {
+		http.Error(w, "serial is missing, empty, or does not match lowercase MAC-style format aa:bb:cc:dd:ee:ff", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.ControllerEndpoint) == "" {
 		http.Error(w, "serial and controller_endpoint are required", http.StatusBadRequest)
 		return
 	}
@@ -106,14 +119,19 @@ func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	req.Serial = strings.ToLower(strings.TrimSpace(req.Serial))
+	serial, valid := normalizeAdminDeviceSerial(req.Serial)
+	req.Serial = serial
 
 	ownerScope, err := GetOwnerScopeFromCtx(r)
 	if err != nil {
 		http.Error(w, "invalid access token", http.StatusUnauthorized)
 		return
 	}
-	if req.Serial == "" || strings.TrimSpace(req.ControllerEndpoint) == "" {
+	if !valid {
+		http.Error(w, "serial is missing, empty, or does not match lowercase MAC-style format aa:bb:cc:dd:ee:ff", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.ControllerEndpoint) == "" {
 		http.Error(w, "serial and controller_endpoint are required", http.StatusBadRequest)
 		return
 	}
@@ -127,15 +145,15 @@ func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /v1/device/{serial}
 func (h *DeviceHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	serial := strings.ToLower(strings.TrimSpace(r.PathValue("serial")))
+	serial, valid := normalizeAdminDeviceSerial(r.PathValue("serial"))
 
 	ownerScope, err := GetOwnerScopeFromCtx(r)
 	if err != nil {
 		http.Error(w, "invalid access token", http.StatusUnauthorized)
 		return
 	}
-	if serial == "" {
-		http.Error(w, "serial path parameter is empty or whitespace after trimming", http.StatusBadRequest)
+	if !valid {
+		http.Error(w, "serial path parameter is missing, empty, or does not match lowercase MAC-style format aa:bb:cc:dd:ee:ff", http.StatusBadRequest)
 		return
 	}
 
