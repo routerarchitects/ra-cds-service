@@ -59,7 +59,7 @@ const maxAdminRequestBodyBytes int64 = 1 << 20 // 1 MiB
 
 var adminDeviceSerialPattern = regexp.MustCompile(`^[0-9a-f]{2}(:[0-9a-f]{2}){5}$`)
 
-func normalizeAdminDeviceSerial(serial string) (string, bool) {
+func trimAndValidateAdminDeviceSerial(serial string) (string, bool) {
 	serial = strings.TrimSpace(serial)
 	return serial, adminDeviceSerialPattern.MatchString(serial)
 }
@@ -77,7 +77,7 @@ func (h *DeviceHandler) Add(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	serial, valid := normalizeAdminDeviceSerial(req.Serial)
+	serial, valid := trimAndValidateAdminDeviceSerial(req.Serial)
 	req.Serial = serial
 
 	ownerScope, err := GetOwnerScopeFromCtx(r)
@@ -119,7 +119,7 @@ func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	serial, valid := normalizeAdminDeviceSerial(req.Serial)
+	serial, valid := trimAndValidateAdminDeviceSerial(req.Serial)
 	req.Serial = serial
 
 	ownerScope, err := GetOwnerScopeFromCtx(r)
@@ -145,7 +145,7 @@ func (h *DeviceHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 // DELETE /v1/device/{serial}
 func (h *DeviceHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	serial, valid := normalizeAdminDeviceSerial(r.PathValue("serial"))
+	serial, valid := trimAndValidateAdminDeviceSerial(r.PathValue("serial"))
 
 	ownerScope, err := GetOwnerScopeFromCtx(r)
 	if err != nil {
