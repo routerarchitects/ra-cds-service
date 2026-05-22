@@ -4,7 +4,7 @@ services:
     container_name: cds-postgres
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       POSTGRES_DB: postgres
     volumes:
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -26,14 +26,14 @@ services:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: postgres
-      KC_DB_PASSWORD: password
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       KC_HTTP_ENABLED: "true"
       KC_HTTP_RELATIVE_PATH: /keycloak
       KC_HOSTNAME: ${KC_HOSTNAME:-https://cds.example.com:5443/keycloak}
       KC_HOSTNAME_STRICT: "false"
       KC_PROXY_HEADERS: xforwarded
       KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set in .env}
     depends_on:
       postgres:
         condition: service_healthy
