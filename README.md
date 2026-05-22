@@ -1,436 +1,857 @@
-## ra-cds-service
+# ra-cds-service
 
-A Dockerized CDS (Controller Discovery Service) for storing and serving device → controller endpoint mappings.
-This service runs Go APIs (PostgreSQL-backed) fronted by Nginx (TLS).
+Dockerized CDS (Controller Discovery Service) deployment for storing and serving device-to-controller endpoint mappings.
+
+This repository contains:
+
+- `cds_service/` — Go backend service.
+- `cds_deploy/` — Docker Compose deployment assets for:
+  - PostgreSQL
+  - Keycloak
+  - CDS backend API
+  - Nginx TLS reverse proxy
+  - Admin UI static hosting
+
+The CDS deployment supports:
+
+- Admin UI with Keycloak login and DPoP-bound access tokens.
+- Admin APIs protected by Keycloak DPoP authentication.
+- Device-facing mTLS lookup API.
+- PostgreSQL-backed device serial to controller endpoint mappings.
+
+---
 
 ## Table of Contents
 
--   [Overview](#overview)
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Clone Repositories](#clone-repositories)
+- [Deployment Files](#deployment-files)
+- [Build Admin UI](#build-admin-ui)
+- [Configure TLS Certificates](#configure-tls-certificates)
+- [Configure Backend Environment](#configure-backend-environment)
+- [Configuration cds_deploy/nginx/cds.conf](#configuration-cds_deploynginxcdsconf)
+- [Start Containers](#start-containers)
+- [Configure Keycloak](#configure-keycloak)
+- [Verify Deployment](#verify-deployment)
+- [Test Admin UI Flow](#test-admin-ui-flow)
+- [Test Device mTLS Lookup](#test-device-mtls-lookup)
+- [Cloud Firewall / Security Group](#cloud-firewall--security-group)
+- [Troubleshooting](#troubleshooting)
+- [Security Notes](#security-notes)
+- [Expected Successful Result](#expected-successful-result)
+- [License](#license)
 
--   [Prerequisites](#prerequisites)
+---
 
--   [Clone](#clone)
+## Architecture
 
--   [Local Development (Quick Start)](#local-development-quick-start)
+The deployment runs four containers. The Admin UI is served statically by the nginx container.
 
--   [Generate & Place Server Certificates](#generateplace-server-certificate)
+| Component | Container | Purpose |
+|---|---|---|
+| PostgreSQL | `cds-postgres` | Stores CDS device mappings and Keycloak data |
+| Keycloak | `cds-keycloak` | Issues DPoP-bound access tokens for Admin UI |
+| CDS API | `cds-api` | Go backend service |
+| Nginx | `cds-nginx` | TLS reverse proxy, Admin UI static hosting, mTLS frontend |
 
--   [Run (Docker-Compose)](#run-docker-compose)
+Default external routes:
 
--   [Verify](#verify)
+| Route | Purpose |
+|---|---|
+| `https://cds.example.com:5443/` | CDS Admin UI |
+| `https://cds.example.com:5443/keycloak/admin` | Keycloak Admin Console |
+| `https://cds.example.com:5443/keycloak/realms/cds` | Keycloak issuer |
+| `https://cds.example.com:5443/keycloak/realms/cds/protocol/openid-connect/certs` | Keycloak JWKS URL |
+| `https://cds.example.com:5443/v1/device` | Admin device API |
+| `https://cds.example.com:4443/v1/devices/{serial}` | Device-facing mTLS lookup API |
 
--   [Troubleshooting](#troubleshooting)
+Replace `cds.example.com` with the real DNS name for your deployment.
 
--   [License](#license)
-
-----------
-
-## Overview
-
-`ra-cds-service` exposes HTTPS APIs to:
-
--   Manage devices (add, update, delete, list) using the unified `/v1/device` admin API.
-    - `DELETE` uses `/v1/device/{serial}`.
--   Serves the device → controller endpoint mappings.
-
-
-**You will:**
-
--  **Build/run** containers(Postgres + CDS service + Nginx TLS) with Docker Compose.
+---
 
 
 ## Prerequisites
 
--   Docker Engine and Docker Compose (v2):  `docker --version`,  `docker compose version`
--   OpenSSL (for certificate generation)
+Install the following on the deployment host:
 
-----------
+- Git
+- Docker Engine
+- Docker Compose v2
+- OpenSSL
+- Node.js 20.19+ or 22.12+
+- npm
 
-## Clone
+Check versions:
 
+```bash
+git --version
+docker --version
+docker compose version
+openssl version
+node -v
+npm -v
 ```
+
+The Admin UI uses Vite. Node.js 18 is not sufficient for newer Vite versions. Use Node.js 20.19+ or 22.12+.
+
+If Node.js is too old, install Node.js 20:
+
+```bash
+sudo apt remove -y nodejs npm
+sudo apt update
+sudo apt install -y curl ca-certificates gnupg
+
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+node -v
+npm -v
+```
+
+---
+
+## Clone Repositories
+
+Create the workspace:
+
+```bash
+mkdir -p ~/cds_workspace
+cd ~/cds_workspace
+```
+
+Clone the backend service:
+
+```bash
 git clone https://github.com/routerarchitects/ra-cds-service.git
-cd ra-cds-service
 ```
 
-**Expected minimal service structure (After clone):**
-```
-ra-cds-service/cds_service/
-├── cmd/app/main.go
-├── Dockerfile
-├── go.mod
-└── internal/
-    ├── adapters/logger/logrus_logger.go
-    ├── adapters/postgres/devices_repo.go
-    ├── app/app.go
-    ├── config/config.go
-    ├── http/handlers_devices.go
-    ├── http/middleware.go
-    └── http/routes.go
-```
-----------
+Clone the Admin UI repository:
 
-## Local Development (Quick Start)
-
-**From the root of the project (ra-cds-service/), create the deployment directory structure:**
-
-```
-mkdir -p cds_deploy/{db,nginx/certs}
+```bash
+git clone https://github.com/routerarchitects/mc-cds-ui.git
 ```
 
-### Root layout of service(expected) :
+Expected directory structure:
 
-```
-ra-cds-service/
-   ├── cds_service/   # Go service (cloned from Git repo)
-   └── cds_deploy/    # Deployment assets: Postgres, Nginx (TLS), docker-compose
- ```
 
-----------
-
-Copy the **complete** contents below into the respective files.
-
-### `cds_deploy/docker-compose.yml`
-
-```
-services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: cds-postgres
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: cds
-    volumes:
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d cds || exit 1"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-      start_period: 5s
-    restart: unless-stopped
-
-  cds-api:
-    build:
-      context: ../cds_service
-      dockerfile: Dockerfile
-    container_name: cds-api
-    expose:
-      - "8080"
-    env_file:
-      - .env
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1"]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-      start_period: 5s
-    restart: unless-stopped
-
-  nginx:
-    build:
-      context: ./nginx
-    container_name: cds-nginx
-    ports:
-      - "4443:4443"
-      - "5443:5443"
-    depends_on:
-      cds-api:
-        condition: service_healthy
-    restart: unless-stopped
-
-  ```
-
-### `cds_deploy/db/init.sql`
-
-```sql
-CREATE TABLE IF NOT EXISTS public.devices (
-  serial TEXT PRIMARY KEY,
-  controller_endpoint TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  owner_scope TEXT
-);
-
--- Lowercase serial
-CREATE OR REPLACE FUNCTION trg_lower_serial()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.serial := lower(NEW.serial);
-  RETURN NEW;
-END $$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS lower_serial_on_devices ON public.devices;
-CREATE TRIGGER lower_serial_on_devices
-BEFORE INSERT OR UPDATE ON public.devices
-FOR EACH ROW EXECUTE PROCEDURE trg_lower_serial();
-
--- Maintain updated_at
-CREATE OR REPLACE FUNCTION trg_set_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = now();
-  RETURN NEW;
-END $$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS set_updated_at ON public.devices;
-CREATE TRIGGER set_updated_at
-BEFORE UPDATE ON public.devices
-FOR EACH ROW EXECUTE PROCEDURE trg_set_updated_at();
-
+```text
+~/cds_workspace/
+├── mc-cds-ui/
+│   ├── cds-admin-ui/
+│   └── ui-spec/
+└── ra-cds-service/
+    ├── cds_service/
+    └── cds_deploy/
 ```
 
-### `cds_deploy/nginx/Dockerfile`
+---
+
+## Deployment Files
+
+The deployment files are already included in this repository under `cds_deploy/`.
+
+The examples in this repository use `cds.example.com`. Replace this with your actual deployment DNS name.
+
+Main files to review and update:
+
+| File | What to update |
+|---|---|
+| `cds_deploy/.env.example` | Deployers copy `.env.example` to `.env` and update deployment-specific values.|
+| `cds_deploy/docker-compose.yml` | Keycloak hostname, DB credentials, UI dist mount path, Docker subnet |
+| `cds_deploy/nginx/cds.conf` | Public server name, Nginx routes, TLS certificate paths |
+| `cds_deploy/nginx/Dockerfile` | Certificate files copied into Nginx image |
+| `mc-cds-ui/cds-admin-ui/.env` | Admin UI Keycloak and API settings |
+
+Update these deployment files with below guidance.
+
+---
+
+## Build Admin UI
+
+The Admin UI is served by the `cds-nginx` container from the built `dist/` directory.
+
+Go to the Admin UI project:
+
+```bash
+cd ~/cds_workspace/mc-cds-ui/cds-admin-ui
+```
+
+Create the local Admin UI environment file from the example:
 
 ```
-FROM nginx:1.27-alpine
-COPY cds.conf /etc/nginx/conf.d/default.conf
-COPY certs/server-cert.pem /etc/ssl/certs/server-cert.pem
-COPY certs/server-key.pem /etc/ssl/private/server-key.pem
-COPY certs/cacerts.pem /etc/ssl/certs/ca-cert.pem
-EXPOSE 4443 5443
+cp .env.example .env
 ```
 
-### `cds_deploy/nginx/cds.conf`
 
-```nginx
-# Device-facing API (requires mTLS)
-server {
-    listen 4443 ssl;
-    server_name localhost;
+Update this value:
 
-    ssl_certificate        /etc/ssl/certs/server-cert.pem;
-    ssl_certificate_key    /etc/ssl/private/server-key.pem;
-    ssl_client_certificate /etc/ssl/certs/ca-cert.pem;
-    ssl_verify_client      on;
+```text
+VITE_KEYCLOAK_ISSUER=https://auth.example.com/realms/cds
+```
 
-    location /v1/devices/ {
-        proxy_set_header X-SSL-Client-Verify $ssl_client_verify;
-        proxy_pass http://cds-api:8080;
-    }
+Use your actual deployment hostname.
+
+Example:
+
+```text
+VITE_KEYCLOAK_ISSUER=https://openwifi.routerarchitects.com:5443/keycloak/realms/cds
+```
+
+Install dependencies and build:
+
+```bash
+rm -rf node_modules package-lock.json
+npm install --no-audit --no-fund
+npm run build
+```
+
+Verify output:
+
+```bash
+ls -la dist/
+```
+
+Expected output includes:
+
+```text
+index.html
+assets/
+```
+
+---
+
+## Configure TLS Certificates
+
+Nginx serves two HTTPS ports:
+
+| Port | Purpose | Client certificate required |
+|---|---|---|
+| `5443` | Admin UI, Keycloak, Admin API | No |
+| `4443` | Device-facing lookup API | Yes, mTLS |
+
+Place certificates under:
+
+```text
+~/cds_workspace/ra-cds-service/cds_deploy/nginx/certs/
+```
+
+Expected files:
+
+```text
+admin-server-cert.pem
+admin-server-key.pem
+device-server-cert.pem
+device-server-key.pem
+device-client-ca.pem
+```
+
+### Certificates purpose
+
+| File | Purpose |
+|---|---|
+| `admin-server-cert.pem` | Public TLS certificate for Admin UI, Keycloak, and Admin API on port `5443` |
+| `admin-server-key.pem` | Private key for `admin-server-cert.pem` |
+| `device-server-cert.pem` | Server TLS certificate for the device-facing mTLS API on port `4443` |
+| `device-server-key.pem` | Private key for `device-server-cert.pem` |
+| `device-client-ca.pem` | CA chain used by Nginx to verify device client certificates on port `4443` |
+
+For the device-facing mTLS API, `device-server-cert.pem`, `device-server-key.pem`, and `device-client-ca.pem` must align with the CA/issuer used for actual device operational certificates. Devices use this CA chain to trust the CDS server, and Nginx uses `device-client-ca.pem` to verify device client certificates.
+
+For the Admin UI, Keycloak, and Admin API, `admin-server-cert.pem` and `admin-server-key.pem` should be REST API HTTPS server certificates for the public deployment hostname. The admin certificate must include the actual hostname in its SAN, for example:
+
+```text
+DNS.1 = openwifi.routerarchitects.com
+```
+
+## Configure Backend Environment
+
+The deployment ships with an example environment file:
+
+```text
+cds_deploy/.env.example
+```
+Create the local deployment environment file from the example:
+
+```
+cd ~/cds_workspace/ra-cds-service/cds_deploy
+cp .env.example .env
+```
+Update the placeholder host cds.example.com with your actual deployment hostname in `.env`.
+
+For example, change:
+```
+KC_HOSTNAME=https://cds.example.com:5443/keycloak
+KEYCLOAK_ISSUER_URL=https://cds.example.com:5443/keycloak/realms/cds
+KEYCLOAK_JWKS_URL=https://cds.example.com:5443/keycloak/realms/cds/protocol/openid-connect/certs
+```
+To (Update with your actual DNS):
+```
+KC_HOSTNAME=https://openwifi.routerarchitects.com:5443/keycloak
+KEYCLOAK_ISSUER_URL=https://openwifi.routerarchitects.com:5443/keycloak/realms/cds
+KEYCLOAK_JWKS_URL=https://openwifi.routerarchitects.com:5443/keycloak/realms/cds/protocol/openid-connect/certs
+```
+
+Admin UI must use the same host in `mc-cds-ui/cds-admin-ui/.env`:
+
+```env
+VITE_KEYCLOAK_ISSUER=https://<real-host>:5443/keycloak/realms/cds
+```
+
+
+## Configuration cds_deploy/nginx/cds.conf
+
+Before deployment, replace ```cds.example.com``` with your actual DNS:
+
+Example:
+
+```text
+server_name  cds.example.com;
+```
+
+replace with your actual deployment DNS name like:
+
+```text
+server_name  openwifi.routerarchitects.com;
+```
+
+---
+
+## Start Containers
+
+Go to the deployment directory:
+
+```bash
+cd ~/cds_workspace/ra-cds-service/cds_deploy
+```
+
+Validate Compose configuration:
+
+```bash
+docker compose config
+```
+
+Build and start:
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+
+Check containers:
+
+```bash
+docker ps -a | grep cds
+```
+
+Expected containers:
+
+```text
+cds-postgres
+cds-keycloak
+cds-api
+cds-nginx
+```
+
+Check logs:
+
+```bash
+docker compose logs -f postgres
+docker compose logs -f keycloak
+docker compose logs -f cds-api
+docker compose logs -f nginx
+```
+
+Verify Nginx active config:
+
+```bash
+docker exec -it cds-nginx nginx -T | grep -E "listen|server_name" -n
+```
+
+Expected:
+
+```text
+listen 4443 ssl;
+listen 5443 ssl;
+server_name cds.example.com;
+```
+
+with your actual hostname.
+
+---
+
+## Configure Keycloak
+
+Open the Keycloak Admin Console:
+
+```text
+https://cds.example.com:5443/keycloak/admin
+```
+
+Login using the bootstrap admin credentials from `docker-compose.yml`.
+
+Example:
+
+```text
+username: admin 
+password: admin
+```
+
+Change the admin password for any real deployment.
+
+---
+
+### Create Realm
+
+Create a realm named:
+
+```text
+cds
+```
+
+All clients, roles, and users below should be created inside the `cds` realm.
+
+---
+
+### Create Backend Audience Client: `cds-service`
+
+Create an OpenID Connect client:
+
+| Field | Value |
+|---|---|
+| Client ID | `cds-service` |
+| Name | `CDS Service` |
+
+Recommended settings:
+
+| Setting | Value |
+|---|---|
+| Client authentication | Off |
+| Authorization | Off |
+| Standard flow | Off |
+| Direct access grants | Off |
+| Implicit flow | Off |
+| Device Authorization Grant | Off |
+
+Save the client.
+
+Create a client role under `cds-service`:
+
+```text
+cds-admin
+```
+
+---
+
+### Create Admin UI Client: `cds-admin-ui`
+
+Create an OpenID Connect client:
+
+| Field | Value |
+|---|---|
+| Client ID | `cds-admin-ui` |
+| Name | `CDS Admin UI` |
+
+Recommended settings:
+
+| Setting | Value |
+|---|---|
+| Client authentication | Off |
+| Authorization | Off |
+| Standard flow | On |
+| Direct access grants | Off |
+| Implicit flow | Off |
+| Device Authorization Grant | Off |
+
+Set URLs using your deployment host.
+
+For placeholder host:
+
+| Field | Value |
+|---|---|
+| Root URL | `https://cds.example.com:5443` |
+| Home URL | `https://cds.example.com:5443/` |
+| Admin URL | `https://cds.example.com:5443` |
+| Valid redirect URIs | `https://cds.example.com:5443/callback` |
+| Valid post logout redirect URIs | `https://cds.example.com:5443/` |
+| Web origins | `https://cds.example.com:5443` |
+
+Use your real host in above URLs Example:
+
+```text
+https://openwifi.routerarchitects.com:5443
+```
+
+---
+
+### Enable PKCE and DPoP
+
+Open the `cds-admin-ui` client.
+
+Go to the advanced settings and configure:
+
+| Setting | Value |
+|---|---|
+| Proof Key for Code Exchange Code Challenge Method | `S256` |
+| OAuth 2.0 DPoP Bound Access Tokens | On |
+
+Save the client.
+
+---
+
+### Add Audience Mapper
+
+The CDS backend expects the access token audience to include cds-service.
+
+Add an audience mapper to the `cds-admin-ui` client.
+
+Go to `Client scopes` and select `cds-admin-ui-dedicated`
+
+Click on `Configure a new mapper`:
+
+| Field | Value |
+|---|---|
+| Select Mapper type | Audience |
+| Name | `cds-service-audience` |
+| Included Client Audience | `cds-service` |
+| Add to access token | On |
+| Add to ID token | Off |
+
+Save the mapper.
+
+---
+
+### Create Admin User
+
+Create a user, for example:
+
+| Field | Value |
+|---|---|
+| Username | `admin1` |
+| Email | `admin1@example.com` |
+| First name | `Admin` |
+| Last name | `User` |
+| Email verified | On |
+
+Go to credentials of `admin1` user
+Set password:
+
+```text
+Admin@123
+```
+
+Set Temporary to:
+
+```text
+Off
+```
+
+Use a stronger password for real deployments.
+
+---
+
+### Assign Role To Created User (`admin1`)
+
+After creating user `admin1`, assign the required `cds-admin` role.
+
+In Keycloak Admin Console:
+1. Go to `Users` and Select `admin1`.
+2. Open `Role mapping`.
+3. Click `Assign role`.
+4. Select `cds-service` -> `cds-admin`.
+5. Save.
+
+
+---
+
+## Verify Deployment
+
+### Verify Container Status
+
+```bash
+cd ~/cds_workspace/ra-cds-service/cds_deploy
+docker compose ps
+```
+
+Expected:
+
+```text
+cds-postgres   running / healthy
+cds-keycloak   running
+cds-api        running / healthy
+cds-nginx      running
+```
+
+---
+
+### Verify Nginx Admin UI Route
+
+Open:
+
+```text
+https://cds.example.com:5443/
+```
+
+Expected:
+
+- Admin UI loads.
+- Login button is visible.
+- Browser may warn if using a private/self-signed certificate.
+
+---
+
+### Verify JWKS From Host
+
+```bash
+curl -k https://cds.example.com:5443/keycloak/realms/cds/protocol/openid-connect/certs
+```
+
+Expected:
+
+```json
+{
+  "keys": [...]
 }
-
-# Admin-facing API (no client cert, Keycloak DPoP headers are forwarded)
-server {
-    listen 5443 ssl;
-    server_name localhost;
-
-    ssl_certificate        /etc/ssl/certs/server-cert.pem;
-    ssl_certificate_key    /etc/ssl/private/server-key.pem;
-    ssl_verify_client      off;
-
-    location /v1/device {
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host  $host;
-        proxy_set_header X-Forwarded-Port  $server_port;
-        proxy_pass http://cds-api:8080;
-    }
-}
-```
-### `cds_deploy/.env`
-
-```
-# PostgreSQL DSN for unified cds_service
-POSTGRES_DSN=postgres://postgres:password@postgres:5432/cds?sslmode=disable
-
-# Go service listen address (must match EXPOSE 8080)
-HTTP_ADDR=:8080
-
-# Auth mode
-AUTH_MODE=keycloak-dpop
-
-# Keycloak JWT validation
-KEYCLOAK_ISSUER_URL=https://keycloak.example.com/realms/cds
-KEYCLOAK_JWKS_URL=https://keycloak.example.com/realms/cds/protocol/openid-connect/certs
-KEYCLOAK_AUDIENCE=cds-service
-KEYCLOAK_REQUIRED_ROLE=cds-admin
-KEYCLOAK_ADMIN_UI_CLIENT_ID=cds-admin-ui
-KEYCLOAK_ACCESS_TOKEN_ALG=RS256
-
-# DPoP validation
-DPOP_REQUIRED=true
-DPOP_ALLOWED_ALGS=ES256
-DPOP_JTI_CACHE_TTL_SECONDS=300
-DPOP_PROOF_MAX_AGE_SECONDS=300
-DPOP_CLOCK_SKEW_SECONDS=30
-
-# JWKS cache
-JWKS_CACHE_TTL_SECONDS=300
-
-# KEYCLOAK_JWKS_URL should use HTTPS in deployed environments.
-# HTTP is allowed only for localhost/loopback testing.
-
-# Trusted proxy CIDRs for forwarded headers.
-# Replace this with the actual Nginx/proxy CIDR for your deployment.
-TRUSTED_PROXY_CIDRS=10.42.3.0/24
-```
----------
-
-**Note:**
-`cds-api` must stay internal and should only be reachable through Nginx/trusted proxies. Use
-Docker internal networking, firewall rules, or Kubernetes NetworkPolicy to prevent direct client
-access. CDS trusts `X-SSL-Client-Verify` only when the request source IP is within
-`TRUSTED_PROXY_CIDRS`.
-
-Device-facing lookup is currently global for any successfully mTLS-verified device client. CDS does not bind the verified client certificate identity to the requested `/v1/devices/{serial}` value. Per-device certificate-to-serial authorization is planned as a follow-up hardening step.
-
-DPoP replay protection uses an in-memory `jti` cache and is instance-local. It is supported for single-instance CDS deployments only; multi-instance deployments require a shared cache, such as Redis.
-
-Set the Keycloak and DPoP values to your deployment-specific values.
-Admin API requests must include both:
-- `Authorization: DPoP <keycloak_access_token>`
-- `DPoP: <dpop_proof_jwt>`
-
-## Generate & Place Server Certificates
-
-**Important:**
- The Nginx **server certificate must be issued by the same CA & issuer that signs the devices operational certificates**, so devices/clients can trust this service.
-
-> **Where to place:** `cds_deploy/nginx/certs/{server-cert.pem,server-key.pem,cacerts.pem}`
-
-**Expected Layout for cds_deploy/**
-**tree cds_deploy -a**
-```
-cds_deploy/
-├── db/init.sql
-├── docker-compose.yml
-|── .env
-└── nginx/
-    ├── Dockerfile
-    ├── cds.conf
-    └── certs/
-        ├── cacerts.pem
-        ├── server-cert.pem
-        └── server-key.pem
-```
-----------
-
-
-
-## Run (Docker-Compose)
-
-```
-cd cds_deploy
-docker-compose build
-docker-compose up -d
 ```
 
-**To see Logs:**
+---
 
-```
-docker-compose logs -f postgres
-docker-compose logs -f cds-api
-docker-compose logs -f nginx
-```
 
-----------
+## Test Admin UI Flow
 
-## Verify
+Open:
 
-### Important Notes:
-#### Admin Auth Requirement:
-- The CDS service enforces Keycloak DPoP auth for admin APIs.
-- All **add / update / delete / list** operations require:
-  - `Authorization: DPoP <keycloak_access_token>`
-  - `DPoP: <dpop_proof_jwt>`
-- Access token must include the configured admin role (`KEYCLOAK_REQUIRED_ROLE`) for audience `KEYCLOAK_AUDIENCE`.
-#### API Method Mapping (Admin APIs)
-The admin device API uses a single resource path with method-based routing:
-
-GET    /v1/device        -> list devices
-POST   /v1/device        -> create or upsert device
-PUT    /v1/device        -> update existing device
-DELETE /v1/device/{serial} -> delete device
-
-### Add device
-
-```
-curl -k -X POST https://localhost:5443/v1/device \
-  -H "Authorization: DPoP <keycloak_access_token>" \
-  -H "DPoP: <dpop_proof_jwt>" \
-  -H "Content-Type: application/json" \
-  -d '{"serial":"<device-serial-no.>", "controller_endpoint":"<controller-url>"}'
-
-Ex:
-curl -k -X POST https://localhost:5443/v1/device \
-  -H "Authorization: DPoP <keycloak_access_token>" \
-  -H "DPoP: <dpop_proof_jwt>" \
-  -H "Content-Type: application/json" \
-  -d '{"serial":"b4:6a:d4:45:f0:19", "controller_endpoint":"openwifi3.routerarchitects.com"}'
+```text
+https://cds.example.com:5443/
 ```
 
-### Update device
+Steps:
 
+1. Click sign in with Keycloak.
+2. Login with the admin user, for example:
+   ```text
+   admin1 / Admin@123
+   ```
+3. Confirm dashboard loads after callback.
+4. Confirm the UI indicates Keycloak DPoP auth mode.
+5. Add a device mapping.
+
+Use a lowercase MAC-style serial:
+
+```text
+aa:bb:cc:dd:ee:ff
 ```
-curl -k -X PUT https://localhost:5443/v1/device \
-  -H "Authorization: DPoP <keycloak_access_token>" \
-  -H "DPoP: <dpop_proof_jwt>" \
-  -H "Content-Type: application/json" \
-  -d '{"serial":"b4:6a:d4:45:f0:19", "controller_endpoint":"openwifi3.routerarchitects.com"}'
-  ```
+Use a controller endpoint appropriate for your environment:
 
-### Delete device
-
+```text
+openwifi.routerarchitects.com
 ```
-curl -k -X DELETE "https://localhost:5443/v1/device/b4:6a:d4:45:f0:19" \
-  -H "Authorization: DPoP <keycloak_access_token>" \
-  -H "DPoP: <dpop_proof_jwt>"
-```
+---
+5. Update device with another endpoint.
+6. Delete device entry with Delete button.
 
-### List all devices (admin DPoP request)
+## Test Device mTLS Lookup
 
-```
-curl -k https://localhost:5443/v1/device \
-  -H "Authorization: DPoP <keycloak_access_token>" \
-  -H "DPoP: <dpop_proof_jwt>"
+Device-facing lookup route:
+
+```text
+https://cds.example.com:4443/v1/devices/{serial}
 ```
 
-### Get controller url from device serial no.(Use device operational certs for mTLS)
+This route requires a valid client certificate signed by the configured CA.
 
-```
-curl -k https://localhost:4443/v1/devices/b4:6a:d4:45:f0:19 \
+Example:
+
+```bash
+curl -k https://cds.example.com:4443/v1/devices/aa:bb:cc:dd:ee:ff \
   --cacert operational.ca \
-  --cert   operational.pem \
-  --key    key.pem
-  ```
+  --cert operational.pem \
+  --key key.pem
+```
 
-### To test service through device(AP)
-**Ensure the following:**
-- Device firmware version: must be 4.1.0 or later
-- Device should have operational certs signed by same CA & Issuer as
-  cds-server certificates.
-- Ensure the file /etc/ucentral/gateway.json does not exist on the device
-- Update the CDS URL inside /usr/bin/cloud_discovery to point to your
-  deployed CDS service
-- Restart cloud discovery agent:
-  `/etc/init.d/cloud_rescovery restart`
-**Expected Behaviour:**
-Response will be stored in gateway.json if already there is entry for device
-serial no.in db.
-----------
+Expected response:
 
+```json
+{
+  "controller_endpoint": "openwifi3.routerarchitects.com",
+  "serial": "aa:bb:cc:dd:ee:ff"
+}
+```
+---
+
+
+## Cloud Firewall / Security Group
+
+Allow inbound:
+
+| Port | Purpose |
+|---|---|
+| `5443/tcp` | Admin UI, Keycloak, Admin API |
+| `4443/tcp` | Device-facing mTLS API |
+| `22/tcp` | SSH from trusted source IPs only |
+
+---
 
 ## Troubleshooting
 
--   **Handshake / chain errors**
-    Ensure `server-cert.pem` matches `server-key.pem`, and `cacerts.pem` is the correct CA chain (same issuer as device operational certs). Check URL SAN vs hostname.
+### Admin UI does not load
 
--   **Permission errors**
-    Verify Docker can read the certs/keys in `nginx/certs` and the bind mounts exist.
+Check Nginx logs:
 
--   **Wrong port**
-    Local tests assume `"5443:4443"`.If you changes ports,update curl commands accordingly.
+```bash
+docker compose logs --tail=100 nginx
+```
 
--   **Schema mismatch**
-    Align `init.sql` with what `internal/adapters/postgres/devices_repo.go` expects.
+Verify Admin UI build output exists:
 
+```bash
+ls -la ~/cds_workspace/mc-cds-ui/cds-admin-ui/dist/
+```
 
-----------
+Verify the Nginx volume path in `docker-compose.yml`.
+
+---
+
+### Keycloak login fails or redirects incorrectly
+
+Check all of these values match the same public host and port:
+
+- `VITE_KEYCLOAK_ISSUER`
+- `KEYCLOAK_ISSUER_URL`
+- `KEYCLOAK_JWKS_URL`
+- `KC_HOSTNAME`
+- Keycloak client Root URL
+- Keycloak Valid redirect URIs
+- Keycloak Web origins
+
+Expected public base URL:
+
+```text
+https://cds.example.com:5443
+```
+
+---
+
+### CDS returns `401 invalid access token`
+
+Check:
+
+- Access token issuer matches `KEYCLOAK_ISSUER_URL`.
+- Access token audience includes `cds-service`.
+- User has `cds-service / cds-admin` role.
+- Keycloak JWKS URL is reachable from `cds-api`.
+- CDS can validate the Keycloak TLS certificate.
+
+Check CDS logs:
+
+```bash
+docker compose logs --tail=200 cds-api
+```
+
+---
+
+### CDS returns DPoP `htu` mismatch
+
+DPoP `htu` must match the exact external URL used by the browser.
+
+Check:
+
+- Nginx sends:
+  - `X-Forwarded-Proto`
+  - `X-Forwarded-Host`
+  - `X-Forwarded-Port`
+- `TRUSTED_PROXY_CIDRS` includes the Docker subnet used by Nginx.
+- Browser URL uses the same host/port as Keycloak and Admin UI config.
+- Do not change ports without updating all config files.
+
+---
+
+### Device mTLS request fails
+
+Check:
+
+- Device client certificate is signed by CA in `device-client-ca.pem`.
+- `ssl_verify_client on;` is configured on port `4443`.
+- Client sends `--cert` and `--key`.
+- Device-facing server certificate is trusted by the client.
+- Certificate SAN contains the hostname used by devices.
+
+Check Nginx logs:
+
+```bash
+docker compose logs --tail=100 nginx
+```
+
+---
+
+### Database row not found
+
+Check table contents:
+
+```bash
+docker exec -it cds-postgres psql -U postgres -d cds -x -c "SELECT * FROM public.devices;"
+```
+
+Confirm:
+
+- `serial` entry exists in lowercase.
+- `owner_scope` belongs to the logged-in Keycloak subject.
+- You are using the same admin user that created the row.
+
+---
+
+### Schema mismatch
+
+Align:
+
+```text
+cds_deploy/db/init.sql
+```
+
+with:
+
+```text
+cds_service/internal/adapters/postgres/devices_repo.go
+```
+
+---
+
+## Security Notes
+
+- Do not expose `cds-api` directly to the public internet.
+- Do not expose PostgreSQL publicly.
+- Use strong Keycloak admin credentials.
+- Use production certificates for public deployments.
+- Keep private keys out of Git.
+- DPoP replay protection uses an in-memory `jti` cache and is instance-local. Multi-instance CDS deployments require a shared replay cache such as Redis.
+- Device-facing lookup is currently global for any successfully mTLS-verified device client. CDS does not yet bind the verified client certificate identity to the requested serial.
+
+---
+
+## Expected Successful Result
+
+A successful deployment should have:
+
+- Admin UI available at:
+  ```text
+  https://cds.example.com:5443/
+  ```
+- Keycloak Admin Console available at:
+  ```text
+  https://cds.example.com:5443/keycloak/admin
+  ```
+- Admin UI login redirects to Keycloak and back to `/callback`.
+- Admin dashboard loads after login.
+- Admin UI can add, update, list, and delete device mappings.
+- CDS API logs show successful DPoP-authenticated admin requests.
+- Device-facing mTLS lookup returns the expected controller endpoint.
+- PostgreSQL contains rows in `public.devices`.
+
+---
 
 ## License
-- SPDX-License-Identifier: AGPL-3.0 OR LicenseRef-Commercial
-- Copyright (c) 2025 Infernet Systems Pvt Ltd
+
+SPDX-License-Identifier: AGPL-3.0 OR LicenseRef-Commercial
+
+Copyright (c) 2025 Infernet Systems Pvt Ltd

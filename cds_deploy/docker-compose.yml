@@ -1,0 +1,95 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cds-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: postgres
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - cds-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: cds-keycloak
+    command: ["start-dev", "--features=dpop"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: password
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_RELATIVE_PATH: /keycloak
+      KC_HOSTNAME: ${KC_HOSTNAME:-https://cds.example.com:5443/keycloak}
+      KC_HOSTNAME_STRICT: "false"
+      KC_PROXY_HEADERS: xforwarded
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8080"
+    networks:
+      - cds-net
+    restart: unless-stopped
+
+  cds-api:
+    build:
+      context: ../cds_service
+      dockerfile: Dockerfile
+    container_name: cds-api
+    expose:
+      - "8080"
+    env_file:
+      - .env
+    volumes:
+      - ./nginx/certs/device-client-ca.pem:/etc/ssl/certs/cds-cloud-ca.pem:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    networks:
+      - cds-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  nginx:
+    build:
+      context: ./nginx
+    container_name: cds-nginx
+    ports:
+      - "4443:4443"
+      - "5443:5443"
+    volumes:
+      - ../../mc-cds-ui/cds-admin-ui/dist:/usr/share/nginx/html:ro
+    depends_on:
+      cds-api:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+    networks:
+      - cds-net
+    restart: unless-stopped
+
+networks:
+  cds-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.42.3.0/24
