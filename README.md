@@ -278,6 +278,7 @@ cd ~/cds_workspace/ra-cds-service/cds_deploy
 cp .env.example .env
 ```
 Update the placeholder host cds.example.com with your actual deployment hostname in `.env`.
+Also set strong values for `POSTGRES_PASSWORD` and `KEYCLOAK_ADMIN_PASSWORD` before first startup.
 
 For example, change:
 ```
@@ -298,7 +299,6 @@ Admin UI must use the same host in `mc-cds-ui/cds-admin-ui/.env`:
 VITE_KEYCLOAK_ISSUER=https://<real-host>:5443/keycloak/realms/cds
 ```
 
-
 ## Configuration cds_deploy/nginx/cds.conf
 
 Before deployment, replace ```cds.example.com``` with your actual DNS:
@@ -314,6 +314,8 @@ replace with your actual deployment DNS name like:
 ```text
 server_name  openwifi.routerarchitects.com;
 ```
+
+Update `server_name` in both server blocks (port `4443` and port `5443`).
 
 ---
 
@@ -761,7 +763,7 @@ Check:
   - `X-Forwarded-Proto`
   - `X-Forwarded-Host`
   - `X-Forwarded-Port`
-- `TRUSTED_PROXY_CIDRS` includes the Docker subnet used by Nginx.
+- `TRUSTED_PROXY_CIDRS` is set to the Nginx static IP CIDR (`10.42.3.10/32` by default).
 - Browser URL uses the same host/port as Keycloak and Admin UI config.
 - Do not change ports without updating all config files.
 

@@ -7,6 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       POSTGRES_DB: postgres
     volumes:
+      - postgres_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - cds-net
@@ -21,7 +22,7 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     container_name: cds-keycloak
-    command: ["start-dev", "--features=dpop"]
+    command: ["start", "--features=dpop"]
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
@@ -29,8 +30,8 @@ services:
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       KC_HTTP_ENABLED: "true"
       KC_HTTP_RELATIVE_PATH: /keycloak
-      KC_HOSTNAME: ${KC_HOSTNAME:-https://cds.example.com:5443/keycloak}
-      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME: ${KC_HOSTNAME:?set in .env}
+      KC_HOSTNAME_STRICT: "true"
       KC_PROXY_HEADERS: xforwarded
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set in .env}
@@ -84,7 +85,8 @@ services:
       keycloak:
         condition: service_started
     networks:
-      - cds-net
+      cds-net:
+        ipv4_address: 10.42.3.10
     restart: unless-stopped
 
 networks:
@@ -93,3 +95,6 @@ networks:
     ipam:
       config:
         - subnet: 10.42.3.0/24
+
+volumes:
+  postgres_data:
