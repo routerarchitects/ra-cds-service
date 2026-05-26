@@ -160,7 +160,7 @@ Main files to review and update:
 | `cds_deploy/.env.example` | Deployers copy `.env.example` to `.env` and update deployment-specific values.|
 | `cds_deploy/docker-compose.yml` | Keycloak hostname, DB credentials, UI dist mount path, Docker subnet |
 | `cds_deploy/nginx/cds.conf` | Public server name, Nginx routes, TLS certificate paths |
-| `cds_deploy/nginx/Dockerfile` | Certificate files copied into Nginx image |
+| `cds_deploy/nginx/Dockerfile` | Nginx base image and config only; TLS certs/keys are mounted at runtime |
 | `mc-cds-ui/cds-admin-ui/.env` | Admin UI Keycloak and API settings |
 
 Update these deployment files with below guidance.
@@ -235,6 +235,8 @@ Place certificates under:
 ```text
 ~/cds_workspace/ra-cds-service/cds_deploy/nginx/certs/
 ```
+
+These certificate and key files are mounted into the Nginx container at runtime by `docker-compose.yml`.
 
 Expected files:
 

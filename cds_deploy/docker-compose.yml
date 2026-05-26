@@ -94,6 +94,11 @@ services:
       - "5443:5443"
     volumes:
       - ../../mc-cds-ui/cds-admin-ui/dist:/usr/share/nginx/html:ro
+      - ./nginx/certs/device-server-cert.pem:/etc/ssl/certs/device-server-cert.pem:ro
+      - ./nginx/certs/device-server-key.pem:/etc/ssl/private/device-server-key.pem:ro
+      - ./nginx/certs/admin-server-cert.pem:/etc/ssl/certs/admin-server-cert.pem:ro
+      - ./nginx/certs/admin-server-key.pem:/etc/ssl/private/admin-server-key.pem:ro
+      - ./nginx/certs/device-client-ca.pem:/etc/ssl/certs/device-client-ca.pem:ro
     depends_on:
       cds-api:
         condition: service_healthy
