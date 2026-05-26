@@ -28,6 +28,7 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: postgres
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      KC_HEALTH_ENABLED: "true"
       KC_HTTP_ENABLED: "true"
       KC_HTTP_RELATIVE_PATH: /keycloak
       KC_HOSTNAME: ${KC_HOSTNAME:?set in .env}
@@ -40,6 +41,12 @@ services:
         condition: service_healthy
     expose:
       - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/8080' || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 60
+      start_period: 10s
     networks:
       - cds-net
     restart: unless-stopped
@@ -75,7 +82,7 @@ services:
       postgres:
         condition: service_healthy
       keycloak:
-        condition: service_started
+        condition: service_healthy
     networks:
       - cds-net
     healthcheck:
@@ -104,7 +111,7 @@ services:
       cds-api:
         condition: service_healthy
       keycloak:
-        condition: service_started
+        condition: service_healthy
     networks:
       cds-net:
         ipv4_address: 10.42.3.10
