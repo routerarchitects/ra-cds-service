@@ -746,6 +746,7 @@ Check:
 - User has `cds-service / cds-admin` role.
 - Keycloak JWKS URL is reachable from `cds-api`.
 - CDS can validate the Keycloak TLS certificate.
+- If `KEYCLOAK_JWKS_URL` points to the public HTTPS admin endpoint, the admin TLS certificate must chain to a CA trusted by the `cds-api` container. For private/internal admin CAs, add that CA to the `cds-api` container trust store or use an internal JWKS URL that CDS can trust.
 
 Check CDS logs:
 
