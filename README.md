@@ -826,6 +826,7 @@ cds_service/internal/adapters/postgres/devices_repo.go
 - Use strong Keycloak admin credentials.
 - Use production certificates for public deployments.
 - Keep private keys out of Git.
+- Nginx enforces TLSv1.2/TLSv1.3, adds baseline Admin UI security headers, and applies conservative rate limits to Keycloak, admin API, and device lookup routes.
 - DPoP replay protection uses an in-memory `jti` cache and is instance-local. Multi-instance CDS deployments require a shared replay cache such as Redis.
 - Device-facing lookup is currently global for any successfully mTLS-verified device client. CDS does not yet bind the verified client certificate identity to the requested serial.
 
