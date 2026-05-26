@@ -246,6 +246,7 @@ admin-server-key.pem
 device-server-cert.pem
 device-server-key.pem
 device-client-ca.pem
+admin-client-ca.pem
 ```
 
 ### Certificates purpose
@@ -257,8 +258,11 @@ device-client-ca.pem
 | `device-server-cert.pem` | Server TLS certificate for the device-facing mTLS API on port `4443` |
 | `device-server-key.pem` | Private key for `device-server-cert.pem` |
 | `device-client-ca.pem` | CA chain used by Nginx to verify device client certificates on port `4443` |
+| `admin-client-ca.pem` | CA chain trusted by `cds-api` for outbound HTTPS verification of Keycloak JWKS/admin endpoint |
 
 For the device-facing mTLS API, `device-server-cert.pem`, `device-server-key.pem`, and `device-client-ca.pem` must align with the CA/issuer used for actual device operational certificates. Devices use this CA chain to trust the CDS server, and Nginx uses `device-client-ca.pem` to verify device client certificates.
+
+For admin token verification, `cds-api` trusts `admin-client-ca.pem` via `SSL_CERT_FILE` for HTTPS calls to `KEYCLOAK_JWKS_URL`.
 
 For the Admin UI, Keycloak, and Admin API, `admin-server-cert.pem` and `admin-server-key.pem` should be REST API HTTPS server certificates for the public deployment hostname. The admin certificate must include the actual hostname in its SAN, for example:
 

@@ -68,8 +68,9 @@ services:
       DPOP_CLOCK_SKEW_SECONDS: ${DPOP_CLOCK_SKEW_SECONDS:-30}
       JWKS_CACHE_TTL_SECONDS: ${JWKS_CACHE_TTL_SECONDS:-300}
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:?set in .env}
+      SSL_CERT_FILE: /etc/ssl/certs/admin-client-ca.pem
     volumes:
-      - ./nginx/certs/device-client-ca.pem:/etc/ssl/certs/cds-cloud-ca.pem:ro
+      - ./nginx/certs/admin-client-ca.pem:/etc/ssl/certs/admin-client-ca.pem:ro
     depends_on:
       postgres:
         condition: service_healthy
