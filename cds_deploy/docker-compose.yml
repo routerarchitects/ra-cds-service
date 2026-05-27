@@ -30,7 +30,8 @@ services:
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       KC_HEALTH_ENABLED: "true"
       KC_HTTP_ENABLED: "true"
-      KC_HTTP_RELATIVE_PATH: /keycloak
+      KC_HTTP_RELATIVE_PATH: "/keycloak"
+      KC_HTTP_MANAGEMENT_RELATIVE_PATH: "/"
       KC_HOSTNAME: ${KC_HOSTNAME:?set in .env}
       KC_HOSTNAME_STRICT: "true"
       KC_PROXY_HEADERS: xforwarded
@@ -44,13 +45,13 @@ services:
     healthcheck:
       test: 
         [
-          "CMD-SHELL",
-          "bash -ec \"{ printf 'HEAD /keycloak/health/ready HTTP/1.0\\r\\n\\r\\n' >&0; grep -q 'HTTP/1.0 200\\|HTTP/1.1 200'; } 0<>/dev/tcp/127.0.0.1/9000\""
-        ]
+      "CMD-SHELL",
+      "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '200' <&3"
+    ]
       interval: 3s
       timeout: 2s
       retries: 60
-      start_period: 10s
+      start_period: 30s
     networks:
       - cds-net
     restart: unless-stopped
