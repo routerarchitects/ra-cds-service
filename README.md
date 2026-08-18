@@ -288,12 +288,14 @@ Also set strong values for `POSTGRES_PASSWORD` and `KEYCLOAK_ADMIN_PASSWORD` bef
 
 For example, change:
 ```
+DOMAIN_NAME=cds.example.com
 KC_HOSTNAME=https://cds.example.com:5443/keycloak
 KEYCLOAK_ISSUER_URL=https://cds.example.com:5443/keycloak/realms/cds
 KEYCLOAK_JWKS_URL=https://cds.example.com:5443/keycloak/realms/cds/protocol/openid-connect/certs
 ```
 To (Update with your actual DNS):
 ```
+DOMAIN_NAME=openwifi.routerarchitects.com
 KC_HOSTNAME=https://openwifi.routerarchitects.com:5443/keycloak
 KEYCLOAK_ISSUER_URL=https://openwifi.routerarchitects.com:5443/keycloak/realms/cds
 KEYCLOAK_JWKS_URL=https://openwifi.routerarchitects.com:5443/keycloak/realms/cds/protocol/openid-connect/certs

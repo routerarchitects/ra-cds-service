@@ -92,6 +92,8 @@ services:
       timeout: 2s
       retries: 30
       start_period: 5s
+    extra_hosts:
+      - "${DOMAIN_NAME:?set in .env}:10.42.3.10"
     restart: unless-stopped
 
   nginx:
